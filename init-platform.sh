@@ -1,184 +1,155 @@
 #!/bin/bash
 
-# Valeurs par défaut
-PROJECT_NAME="video-surveillance-platform"
-GROUP_ID="com.example"
-VERSION="1.0-SNAPSHOT"
-JAVA_VERSION="17"
-SPRING_BOOT_VERSION="3.2.5"
+set -e
+
+# Colors
+GREEN="\e[32m"
+RED="\e[31m"
+RESET="\e[0m"
+
+# Default values
 FORCE=false
 
-# Liste des modules
-MODULES=("video-core" "video-streaming" "video-storage" "video-analysis" "face-recognition" "api-gateway" "config-server" "service-discovery" "client-ui" "common")
-
-# Dépendances Spring par module
-declare -A SPRING_DEPENDENCIES=(
-  ["video-core"]=""
-  ["video-streaming"]="spring-boot-starter-web"
-  ["video-storage"]="spring-boot-starter-data-jpa"
-  ["video-analysis"]="spring-boot-starter"
-  ["face-recognition"]="spring-boot-starter"
-  ["api-gateway"]="spring-cloud-starter-gateway"
-  ["config-server"]="spring-cloud-config-server"
-  ["service-discovery"]="spring-cloud-starter-netflix-eureka-server"
-  ["client-ui"]="spring-boot-starter-thymeleaf"
-  ["common"]=""
-)
-
-# Gitignore standard Java
-GITIGNORE_CONTENT='
-target/
-.idea/
-.vscode/
-*.iml
-*.log
-*.jar
-*.war
-*.class
-.DS_Store
-'
-
-# Argument parser
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --name) PROJECT_NAME="$2"; shift ;;
-        --java) JAVA_VERSION="$2"; shift ;;
-        --springboot) SPRING_BOOT_VERSION="$2"; shift ;;
-        --force) FORCE=true ;;
-        *) echo "❌ Option inconnue : $1" && exit 1 ;;
-    esac
-    shift
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project-name)
+      PROJECT_NAME=$2
+      shift 2
+      ;;
+    --java-version)
+      JAVA_VERSION=$2
+      shift 2
+      ;;
+    --spring-boot-version)
+      SB_VERSION=$2
+      shift 2
+      ;;
+    --force)
+      FORCE=true
+      shift
+      ;;
+    *)
+      echo -e "${RED}Unknown option: $1${RESET}"
+      exit 1
+      ;;
+  esac
 done
 
-# Vérification Java
-if ! command -v java &>/dev/null; then
-    echo "❌ Java n'est pas installé. Veuillez l'installer avant de continuer."
-    exit 1
-else
-    echo "✅ Java trouvé : $(java -version 2>&1 | head -n 1)"
+# Check required args
+if [[ -z "$PROJECT_NAME" || -z "$JAVA_VERSION" || -z "$SB_VERSION" ]]; then
+  echo -e "${RED}Usage: $0 --project-name NAME --java-version VERSION --spring-boot-version VERSION [--force]${RESET}"
+  exit 1
 fi
 
-# Vérification Maven
-if ! command -v mvn &>/dev/null; then
-    echo "❌ Maven n'est pas installé. Veuillez l'installer avant de continuer."
-    exit 1
-else
-    echo "✅ Maven trouvé : $(mvn -v | head -n 1)"
+# Check Java
+if ! type -p java > /dev/null; then
+  echo -e "${RED}Java not found in PATH${RESET}"
+  exit 1
 fi
 
-# Création du parent pom.xml
-generate_parent_pom() {
-cat <<EOF
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
+# Check Maven
+if ! type -p mvn > /dev/null; then
+  echo -e "${RED}Maven not found in PATH${RESET}"
+  exit 1
+fi
 
-    <groupId>${GROUP_ID}</groupId>
-    <artifactId>${PROJECT_NAME}</artifactId>
-    <version>${VERSION}</version>
-    <packaging>pom</packaging>
+# Setup
+BASE_DIR="$PWD/$PROJECT_NAME"
 
-    <properties>
-        <java.version>${JAVA_VERSION}</java.version>
-        <spring-boot.version>${SPRING_BOOT_VERSION}</spring-boot.version>
-    </properties>
+if [[ -d "$BASE_DIR" && "$FORCE" != true ]]; then
+  echo -e "${RED}Directory $BASE_DIR already exists. Use --force to overwrite.${RESET}"
+  exit 1
+elif [[ -d "$BASE_DIR" ]]; then
+  rm -rf "$BASE_DIR"
+fi
 
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-dependencies</artifactId>
-                <version>\${spring-boot.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
+mkdir -p "$BASE_DIR"
+cd "$BASE_DIR"
 
-    <modules>
-$(for module in "${MODULES[@]}"; do echo "        <module>$module</module>"; done)
-    </modules>
+echo -e "${GREEN}Creating project structure...${RESET}"
 
-    <build>
-        <pluginManagement>
-            <plugins>
-                <plugin>
-                    <groupId>org.springframework.boot</groupId>
-                    <artifactId>spring-boot-maven-plugin</artifactId>
-                </plugin>
-            </plugins>
-        </pluginManagement>
-    </build>
-</project>
+# Generate .gitignore
+cat > .gitignore <<EOF
+/target
+/.idea
+*.iml
+*.log
+*.tmp
+.DS_Store
 EOF
-}
 
-# Création pom.xml pour module
-generate_module_pom() {
-  local artifactId=$1
-  local dependencies=${SPRING_DEPENDENCIES[$artifactId]}
-  cat <<EOF
+# Parent POM
+cat > pom.xml <<EOF
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-
-  <parent>
-    <groupId>${GROUP_ID}</groupId>
-    <artifactId>${PROJECT_NAME}</artifactId>
-    <version>${VERSION}</version>
-  </parent>
-
-  <artifactId>${artifactId}</artifactId>
-  <packaging>jar</packaging>
-
-  <dependencies>
-$(for dep in $dependencies; do
-  echo "    <dependency><groupId>org.springframework.boot</groupId><artifactId>$dep</artifactId></dependency>"
-done)
-  </dependencies>
-
-  <build>
-    <plugins>
-      <plugin>
+  <groupId>com.videosurv</groupId>
+  <artifactId>$PROJECT_NAME</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <modules>
+    <module>eureka-server</module>
+    <module>config-server</module>
+    <module>api-gateway</module>
+    <module>video-streaming</module>
+    <module>object-detection</module>
+    <module>object-tracking</module>
+    <module>face-recognition</module>
+    <module>video-storage</module>
+  </modules>
+  <properties>
+    <java.version>$JAVA_VERSION</java.version>
+    <spring-boot.version>$SB_VERSION</spring-boot.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
         <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-maven-plugin</artifactId>
-      </plugin>
-    </plugins>
-  </build>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>\${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
 </project>
 EOF
-}
 
-# Supprimer dossier existant si --force
-if [ -d "$PROJECT_NAME" ]; then
-  if [ "$FORCE" = true ]; then
-    echo "🧨 Suppression de $PROJECT_NAME (mode --force)..."
-    rm -rf "$PROJECT_NAME"
-  else
-    echo "❌ Le dossier $PROJECT_NAME existe déjà. Utilisez --force pour écraser."
-    exit 1
-  fi
-fi
+# Function to create each service
+generate_service() {
+  SERVICE_NAME=$1
+  PACKAGE_NAME="com.videosurv.$SERVICE_NAME"
 
-# Création du projet
-echo "📁 Création du projet : $PROJECT_NAME"
-mkdir "$PROJECT_NAME"
-cd "$PROJECT_NAME" || exit
+  mkdir -p "$SERVICE_NAME/src/main/java/${PACKAGE_NAME//.//}"
+  mkdir -p "$SERVICE_NAME/src/main/resources"
 
-generate_parent_pom > pom.xml
+  cat > "$SERVICE_NAME/pom.xml" <<EOF
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+                             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.videosurv</groupId>
+    <artifactId>$PROJECT_NAME</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+  </parent>
+  <artifactId>$SERVICE_NAME</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+EOF
 
-for module in "${MODULES[@]}"; do
-  echo "📦 Génération du module : $module"
-  mkdir -p "$module/src/main/java/${GROUP_ID//./\/}/$module"
-  mkdir -p "$module/src/main/resources"
-  mkdir -p "$module/src/test/java"
-
-  generate_module_pom "$module" > "$module/pom.xml"
-
-  cat > "$module/src/main/java/${GROUP_ID//./\/}/$module/Application.java" <<EOF
-package ${GROUP_ID}.${module};
+  # Application.java
+  cat > "$SERVICE_NAME/src/main/java/${PACKAGE_NAME//.//}/Application.java" <<EOF
+package $PACKAGE_NAME;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -191,227 +162,41 @@ public class Application {
 }
 EOF
 
-  cat > "$module/src/main/resources/application.yml" <<EOF
+  # application.yml
+  cat > "$SERVICE_NAME/src/main/resources/application.yml" <<EOF
 spring:
   application:
-    name: $module
-EOF
-
-done
-
-# Git init
-echo "$GITIGNORE_CONTENT" > .gitignore
-git init > /dev/null
-git add .
-git commit -m "Initial Spring Boot multi-module setup" > /dev/null
-
-echo "✅ Projet $PROJECT_NAME généré avec succès avec Spring Boot $SPRING_BOOT_VERSION (Java $JAVA_VERSION) !"
-#!/bin/bash
-
-# Valeurs par défaut
-PROJECT_NAME="video-surveillance-platform"
-GROUP_ID="net.isco"
-VERSION="1.0-SNAPSHOT"
-JAVA_VERSION="17"
-SPRING_BOOT_VERSION="3.2.5"
-FORCE=false
-
-# Liste des modules
-MODULES=("video-core" "video-streaming" "video-storage" "video-analysis" "face-recognition" "api-gateway" "config-server" "service-discovery" "client-ui" "common")
-
-# Dépendances Spring par module
-declare -A SPRING_DEPENDENCIES=(
-  ["video-core"]=""
-  ["video-streaming"]="spring-boot-starter-web"
-  ["video-storage"]="spring-boot-starter-data-jpa"
-  ["video-analysis"]="spring-boot-starter"
-  ["face-recognition"]="spring-boot-starter"
-  ["api-gateway"]="spring-cloud-starter-gateway"
-  ["config-server"]="spring-cloud-config-server"
-  ["service-discovery"]="spring-cloud-starter-netflix-eureka-server"
-  ["client-ui"]="spring-boot-starter-thymeleaf"
-  ["common"]=""
-)
-
-# Gitignore standard Java
-GITIGNORE_CONTENT='
-target/
-.idea/
-.vscode/
-*.iml
-*.log
-*.jar
-*.war
-*.class
-.DS_Store
-'
-
-# Argument parser
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --name) PROJECT_NAME="$2"; shift ;;
-        --java) JAVA_VERSION="$2"; shift ;;
-        --springboot) SPRING_BOOT_VERSION="$2"; shift ;;
-        --force) FORCE=true ;;
-        *) echo "❌ Option inconnue : $1" && exit 1 ;;
-    esac
-    shift
-done
-
-# Vérification Java
-if ! command -v java &>/dev/null; then
-    echo "❌ Java n'est pas installé. Veuillez l'installer avant de continuer."
-    exit 1
-else
-    echo "✅ Java trouvé : $(java -version 2>&1 | head -n 1)"
-fi
-
-# Vérification Maven
-if ! command -v mvn &>/dev/null; then
-    echo "❌ Maven n'est pas installé. Veuillez l'installer avant de continuer."
-    exit 1
-else
-    echo "✅ Maven trouvé : $(mvn -v | head -n 1)"
-fi
-
-# Création du parent pom.xml
-generate_parent_pom() {
-cat <<EOF
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
-
-    <groupId>${GROUP_ID}</groupId>
-    <artifactId>${PROJECT_NAME}</artifactId>
-    <version>${VERSION}</version>
-    <packaging>pom</packaging>
-
-    <properties>
-        <java.version>${JAVA_VERSION}</java.version>
-        <spring-boot.version>${SPRING_BOOT_VERSION}</spring-boot.version>
-    </properties>
-
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-dependencies</artifactId>
-                <version>\${spring-boot.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
-
-    <modules>
-$(for module in "${MODULES[@]}"; do echo "        <module>$module</module>"; done)
-    </modules>
-
-    <build>
-        <pluginManagement>
-            <plugins>
-                <plugin>
-                    <groupId>org.springframework.boot</groupId>
-                    <artifactId>spring-boot-maven-plugin</artifactId>
-                </plugin>
-            </plugins>
-        </pluginManagement>
-    </build>
-</project>
+    name: $SERVICE_NAME
+server:
+  port: 0
 EOF
 }
 
-# Création pom.xml pour module
-generate_module_pom() {
-  local artifactId=$1
-  local dependencies=${SPRING_DEPENDENCIES[$artifactId]}
-  cat <<EOF
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-  <modelVersion>4.0.0</modelVersion>
-
-  <parent>
-    <groupId>${GROUP_ID}</groupId>
-    <artifactId>${PROJECT_NAME}</artifactId>
-    <version>${VERSION}</version>
-  </parent>
-
-  <artifactId>${artifactId}</artifactId>
-  <packaging>jar</packaging>
-
-  <dependencies>
-$(for dep in $dependencies; do
-  echo "    <dependency><groupId>org.springframework.boot</groupId><artifactId>$dep</artifactId></dependency>"
-done)
-  </dependencies>
-
-  <build>
-    <plugins>
-      <plugin>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-maven-plugin</artifactId>
-      </plugin>
-    </plugins>
-  </build>
-</project>
-EOF
-}
-
-# Supprimer dossier existant si --force
-if [ -d "$PROJECT_NAME" ]; then
-  if [ "$FORCE" = true ]; then
-    echo "🧨 Suppression de $PROJECT_NAME (mode --force)..."
-    rm -rf "$PROJECT_NAME"
-  else
-    echo "❌ Le dossier $PROJECT_NAME existe déjà. Utilisez --force pour écraser."
-    exit 1
-  fi
-fi
-
-# Création du projet
-echo "📁 Création du projet : $PROJECT_NAME"
-mkdir "$PROJECT_NAME"
-cd "$PROJECT_NAME" || exit
-
-generate_parent_pom > pom.xml
-
-for module in "${MODULES[@]}"; do
-  echo "📦 Génération du module : $module"
-  mkdir -p "$module/src/main/java/${GROUP_ID//./\/}/$module"
-  mkdir -p "$module/src/main/resources"
-  mkdir -p "$module/src/test/java"
-
-  generate_module_pom "$module" > "$module/pom.xml"
-
-  cat > "$module/src/main/java/${GROUP_ID//./\/}/$module/Application.java" <<EOF
-package ${GROUP_ID}.${module};
-
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-
-@SpringBootApplication
-public class Application {
-  public static void main(String[] args) {
-    SpringApplication.run(Application.class, args);
-  }
-}
-EOF
-
-  cat > "$module/src/main/resources/application.yml" <<EOF
-spring:
-  application:
-    name: $module
-EOF
-
+# Generate all services
+SERVICES=(eureka-server config-server api-gateway video-streaming object-detection object-tracking face-recognition video-storage)
+for svc in "${SERVICES[@]}"; do
+  generate_service $svc
 done
 
-# Git init
-echo "$GITIGNORE_CONTENT" > .gitignore
-git init > /dev/null
-git add .
-git commit -m "Initial Spring Boot multi-module setup" > /dev/null
+# Docker Compose
+cat > docker-compose.yml <<EOF
+version: '3.8'
+services:
+  eureka-server:
+    build: ./eureka-server
+    ports:
+      - "8761:8761"
 
-echo "✅ Projet $PROJECT_NAME généré avec succès avec Spring Boot $SPRING_BOOT_VERSION (Java $JAVA_VERSION) !"
+  config-server:
+    build: ./config-server
+    ports:
+      - "8888:8888"
+
+  api-gateway:
+    build: ./api-gateway
+    ports:
+      - "8080:8080"
+EOF
+
+echo -e "${GREEN}✅ Projet généré dans : $BASE_DIR${RESET}"
 
