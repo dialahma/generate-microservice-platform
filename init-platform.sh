@@ -1,55 +1,124 @@
 #!/bin/bash
 
 PROJECT_NAME="video-surveillance-platform"
+GROUP_ID="net.isco"
+VERSION="1.0-SNAPSHOT"
+SPRING_BOOT_VERSION="3.2.5"
+JAVA_VERSION="17"
+
 MODULES=("video-core" "video-streaming" "video-storage" "video-analysis" "face-recognition" "api-gateway" "config-server" "service-discovery" "client-ui" "common")
 FORCE=false
 
+declare -A SPRING_DEPENDENCIES
+SPRING_DEPENDENCIES=(
+  ["video-core"]=""
+  ["video-streaming"]="spring-boot-starter-web"
+  ["video-storage"]="spring-boot-starter-data-jpa"
+  ["video-analysis"]="spring-boot-starter"
+  ["face-recognition"]="spring-boot-starter"
+  ["api-gateway"]="spring-cloud-starter-gateway"
+  ["config-server"]="spring-cloud-config-server"
+  ["service-discovery"]="spring-cloud-starter-netflix-eureka-server"
+  ["client-ui"]="spring-boot-starter-thymeleaf"
+  ["common"]=""
+)
+
 # .gitignore standard Java
 GITIGNORE_CONTENT='
-# Build
 target/
-out/
-
-# IntelliJ
 .idea/
-*.iml
-
-# Eclipse
-.project
-.classpath
-.settings/
-
-# VS Code
 .vscode/
-
-# Logs
+*.iml
 *.log
-
-# Packages
 *.jar
 *.war
-*.ear
-
-# OS files
+*.class
 .DS_Store
-Thumbs.db
 '
 
-# POM de base pour les sous-modules
-generate_module_pom() {
+# Parent POM
+generate_parent_pom() {
 cat <<EOF
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <parent>
-        <groupId>com.example</groupId>
-        <artifactId>$PROJECT_NAME</artifactId>
-        <version>1.0-SNAPSHOT</version>
-    </parent>
+    <groupId>${GROUP_ID}</groupId>
+    <artifactId>${PROJECT_NAME}</artifactId>
+    <version>${VERSION}</version>
+    <packaging>pom</packaging>
 
-    <artifactId>$1</artifactId>
+    <name>Video Surveillance Platform</name>
+
+    <modules>
+$(for module in "${MODULES[@]}"; do echo "        <module>$module</module>"; done)
+    </modules>
+
+    <properties>
+        <java.version>${JAVA_VERSION}</java.version>
+        <spring-boot.version>${SPRING_BOOT_VERSION}</spring-boot.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>\${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>
+EOF
+}
+
+# Module POM
+generate_module_pom() {
+  local artifactId=$1
+  local dependencies=${SPRING_DEPENDENCIES[$artifactId]}
+  cat <<EOF
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>${GROUP_ID}</groupId>
+    <artifactId>${PROJECT_NAME}</artifactId>
+    <version>${VERSION}</version>
+  </parent>
+
+  <artifactId>${artifactId}</artifactId>
+  <packaging>jar</packaging>
+
+  <dependencies>
+$(for dep in $dependencies; do
+  echo "    <dependency><groupId>org.springframework.boot</groupId><artifactId>$dep</artifactId></dependency>"
+done)
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
 </project>
 EOF
 }
@@ -59,7 +128,7 @@ if [[ "$1" == "--force" ]]; then
   FORCE=true
 fi
 
-# Delete existing folder if --force
+# Delete if exists
 if [ -d "$PROJECT_NAME" ]; then
   if [ "$FORCE" = true ]; then
     echo "🧨 Suppression de $PROJECT_NAME (mode --force)..."
@@ -70,47 +139,51 @@ if [ -d "$PROJECT_NAME" ]; then
   fi
 fi
 
-# Create base project structure
+# Create base structure
 echo "📁 Création de la structure du projet $PROJECT_NAME ..."
-mkdir -p "$PROJECT_NAME"
+mkdir "$PROJECT_NAME"
 cd "$PROJECT_NAME" || exit
 
-# Créer pom.xml parent
-cat > pom.xml <<EOF
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
+generate_parent_pom > pom.xml
 
-    <groupId>com.example</groupId>
-    <artifactId>$PROJECT_NAME</artifactId>
-    <version>1.0-SNAPSHOT</version>
-    <packaging>pom</packaging>
+# Créer modules
+for module in "${MODULES[@]}"; do
+  echo "📦 Module : $module"
+  mkdir -p "$module/src/main/java/${GROUP_ID//./\/}/$module"
+  mkdir -p "$module/src/main/resources"
+  mkdir -p "$module/src/test/java"
 
-    <modules>
-$(for module in "${MODULES[@]}"; do echo "        <module>$module</module>"; done)
-    </modules>
+  generate_module_pom "$module" > "$module/pom.xml"
 
-    <name>Video Surveillance Platform</name>
-</project>
+  # Application.java par défaut
+  cat > "$module/src/main/java/${GROUP_ID//./\/}/$module/Application.java" <<EOF
+package ${GROUP_ID}.${module};
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class Application {
+  public static void main(String[] args) {
+    SpringApplication.run(Application.class, args);
+  }
+}
 EOF
 
-# Créer les modules et leur pom.xml
-for module in "${MODULES[@]}"; do
-  echo "📦 Création du module $module ..."
-  mkdir -p "$module/src/main/java" "$module/src/test/java"
-  generate_module_pom "$module" > "$module/pom.xml"
+  # application.yml minimal
+  cat > "$module/src/main/resources/application.yml" <<EOF
+spring:
+  application:
+    name: $module
+EOF
+
 done
 
-# Créer .gitignore
-echo "📝 Création du .gitignore ..."
+# Git + gitignore
 echo "$GITIGNORE_CONTENT" > .gitignore
-
-# Initialiser git
-echo "🔧 Initialisation du dépôt git ..."
 git init > /dev/null
 git add .
-git commit -m "Initial commit: project structure with modules" > /dev/null
+git commit -m "Initial Spring Boot project structure" > /dev/null
 
-echo "✅ Projet $PROJECT_NAME généré avec succès avec tous les modules !"
+echo "✅ Projet Spring Boot multi-modules généré avec succès !"
 
