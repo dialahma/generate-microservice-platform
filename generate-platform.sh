@@ -6,6 +6,7 @@ PROJECT_NAME=""
 JAVA_VERSION="17"
 SPRING_BOOT_VERSION="3.2.5"
 FORCE=false
+GROUP_ID=""
 
 # Parse arguments
 for arg in "$@"; do
@@ -19,6 +20,9 @@ for arg in "$@"; do
     --springboot-version=*)
       SPRING_BOOT_VERSION="${arg#*=}"
       ;;
+    --group-id=*|--package=*)
+      GROUP_ID="${arg#*=}"
+      ;;
     --force)
       FORCE=true
       ;;
@@ -31,6 +35,11 @@ done
 
 if [ -z "$PROJECT_NAME" ]; then
   echo "⚠️  Veuillez spécifier --project-name"
+  exit 1
+fi
+
+if [ -z "$GROUP_ID" ]; then
+  echo "⚠️  Veuillez spécifier --group-id (ou --package)"
   exit 1
 fi
 
@@ -62,7 +71,7 @@ cat > pom.xml <<EOF
                              http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>com.$PROJECT_NAME</groupId>
+  <groupId>$GROUP_ID</groupId>
   <artifactId>$PROJECT_NAME</artifactId>
   <version>1.0.0</version>
   <packaging>pom</packaging>
@@ -99,8 +108,10 @@ EOF
 #####################################
 create_service() {
   local name="$1"
-  local pkg="com.$PROJECT_NAME.$name"
-  mkdir -p "$name/src/main/java/${pkg//.//}" "$name/src/main/resources"
+  local pkg="$GROUP_ID.$name"
+  local path="src/main/java/${pkg//.//}"
+
+  mkdir -p "$name/$path" "$name/src/main/resources"
 
   # pom.xml
   cat > "$name/pom.xml" <<EOF
@@ -110,7 +121,7 @@ create_service() {
          http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
-    <groupId>com.$PROJECT_NAME</groupId>
+    <groupId>$GROUP_ID</groupId>
     <artifactId>$PROJECT_NAME</artifactId>
     <version>1.0.0</version>
   </parent>
@@ -168,7 +179,7 @@ EOD
 EOF
 
   # Application.java
-  local app_file="$name/src/main/java/${pkg//.//}/Application.java"
+  local app_file="$name/$path/Application.java"
   echo "package $pkg;" > "$app_file"
   echo "" >> "$app_file"
   echo "import org.springframework.boot.SpringApplication;" >> "$app_file"
@@ -222,5 +233,5 @@ cat > .gitignore <<EOF
 .DS_Store
 EOF
 
-echo "✅ Plateforme $PROJECT_NAME générée avec succès !"
+echo "✅ Plateforme $PROJECT_NAME générée avec succès avec le groupId $GROUP_ID"
 
