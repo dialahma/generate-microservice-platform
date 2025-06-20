@@ -8,6 +8,16 @@ SPRING_BOOT_VERSION="3.2.5"
 FORCE=false
 GROUP_ID=""
 
+# Liste des services avec ports fixes
+declare -A SERVICE_PORTS=(
+  [eureka-server]=8761
+  [config-server]=8888
+  [api-gateway]=8080
+  [video-core]=8091
+  [video-analyzer]=8092
+  [video-storage]=8093
+)
+
 # Parse arguments
 for arg in "$@"; do
   case $arg in
@@ -33,13 +43,8 @@ for arg in "$@"; do
   esac
 done
 
-if [ -z "$PROJECT_NAME" ]; then
-  echo "⚠️  Veuillez spécifier --project-name"
-  exit 1
-fi
-
-if [ -z "$GROUP_ID" ]; then
-  echo "⚠️  Veuillez spécifier --group-id (ou --package)"
+if [ -z "$PROJECT_NAME" ] || [ -z "$GROUP_ID" ]; then
+  echo "⚠️  Veuillez spécifier --project-name et --group-id"
   exit 1
 fi
 
@@ -77,11 +82,7 @@ cat > pom.xml <<EOF
   <packaging>pom</packaging>
 
   <modules>
-    <module>eureka-server</module>
-    <module>config-server</module>
-    <module>api-gateway</module>
-    <module>video-core</module>
-    <module>video-analyzer</module>
+$(for svc in "${!SERVICE_PORTS[@]}"; do echo "    <module>$svc</module>"; done)
   </modules>
 
   <properties>
@@ -103,17 +104,28 @@ cat > pom.xml <<EOF
 </project>
 EOF
 
+##############################
+### Fonction CamelCase     ###
+##############################
+to_camel_case() {
+  echo "$1" | sed -r 's/(^|-)([a-z])/\U\2/g'
+}
+
 #####################################
 ### Fonction création microservice ###
 #####################################
 create_service() {
   local name="$1"
+  local port="${SERVICE_PORTS[$name]}"
   local pkg="$GROUP_ID.$name"
   local path="src/main/java/${pkg//.//}"
+  local class_name="$(to_camel_case "$name")Application"
 
   mkdir -p "$name/$path" "$name/src/main/resources"
 
+  ####################
   # pom.xml
+  ####################
   cat > "$name/pom.xml" <<EOF
 <project xmlns="http://maven.apache.org/POM/4.0.0" 
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -178,33 +190,39 @@ EOD
 </project>
 EOF
 
+  ####################
   # Application.java
-  local app_file="$name/$path/Application.java"
+  ####################
+  local app_file="$name/$path/$class_name.java"
   echo "package $pkg;" > "$app_file"
   echo "" >> "$app_file"
   echo "import org.springframework.boot.SpringApplication;" >> "$app_file"
   echo "import org.springframework.boot.autoconfigure.SpringBootApplication;" >> "$app_file"
   echo "" >> "$app_file"
   echo "@SpringBootApplication" >> "$app_file"
-  echo "public class Application {" >> "$app_file"
+  echo "public class $class_name {" >> "$app_file"
   echo "  public static void main(String[] args) {" >> "$app_file"
   if [[ "$name" == "video-analyzer" ]]; then
     echo "    nu.pattern.OpenCV.loadLocally();" >> "$app_file"
   fi
-  echo "    SpringApplication.run(Application.class, args);" >> "$app_file"
+  echo "    SpringApplication.run($class_name.class, args);" >> "$app_file"
   echo "  }" >> "$app_file"
   echo "}" >> "$app_file"
 
+  ####################
   # application.yml
+  ####################
   cat > "$name/src/main/resources/application.yml" <<EOF
 spring:
   application:
     name: $name
 server:
-  port: 0
+  port: $port
 EOF
 
+  ####################
   # bootstrap.yml
+  ####################
   cat > "$name/src/main/resources/bootstrap.yml" <<EOF
 spring:
   application:
@@ -213,17 +231,57 @@ spring:
     config:
       uri: http://localhost:8888
 EOF
+
+  ####################
+  # Dockerfile
+  ####################
+  cat > "$name/Dockerfile" <<EOF
+FROM openjdk:$JAVA_VERSION-jdk-slim
+WORKDIR /app
+COPY target/*.jar app.jar
+ENTRYPOINT ["java", "-jar", "app.jar"]
+EOF
 }
 
-####################################
-### Création des microservices ###
-####################################
-for svc in eureka-server config-server api-gateway video-core video-analyzer; do
+#############################
+### Création des services ###
+#############################
+for svc in "${!SERVICE_PORTS[@]}"; do
   echo "📦 Création du module $svc..."
   create_service "$svc"
 done
 
-# .gitignore global
+##############################
+### docker-compose.yml     ###
+##############################
+cat > docker-compose.yml <<EOF
+version: '3.8'
+services:
+EOF
+
+for svc in "${!SERVICE_PORTS[@]}"; do
+  port="${SERVICE_PORTS[$svc]}"
+  cat >> docker-compose.yml <<EOL
+  $svc:
+    build: ./$svc
+    ports:
+      - "$port:$port"
+    networks:
+      - springboot-net
+EOL
+  [[ "$svc" != "eureka-server" && "$svc" != "config-server" ]] && echo "    depends_on: [eureka-server, config-server]" >> docker-compose.yml
+done
+
+cat >> docker-compose.yml <<EOF
+
+networks:
+  springboot-net:
+    driver: bridge
+EOF
+
+##############################
+### .gitignore global      ###
+##############################
 cat > .gitignore <<EOF
 /target
 /.idea
@@ -233,5 +291,5 @@ cat > .gitignore <<EOF
 .DS_Store
 EOF
 
-echo "✅ Plateforme $PROJECT_NAME générée avec succès avec le groupId $GROUP_ID"
+echo "✅ Plateforme $PROJECT_NAME générée avec succès avec groupId=$GROUP_ID"
 
