@@ -90,12 +90,27 @@ verify_project_structure() {
   return $missing
 }
 
+verify_jar() {
+  local SERVICE=$1
+  local JAR_PATH="./$SERVICE/target/smartvision-$SERVICE-0.0.1-SNAPSHOT.jar"
+  
+  if [ ! -f "$JAR_PATH" ]; then
+    echo "❌ ERREUR : Fichier JAR introuvable pour $SERVICE"
+    echo "Chemin attendu : $JAR_PATH"
+    echo "Fichiers trouvés :"
+    ls -lh "./$SERVICE/target/" || echo "Aucun fichier dans target/"
+    exit 1
+  fi
+  
+  echo "✔️ JAR trouvé pour $SERVICE (taille : $(du -h "$JAR_PATH" | cut -f1))"
+}
+
 # Construction des services
 build_services() {
   local mvn_args=()
   $SKIP_TESTS && mvn_args+=("-DskipTests")
 
-  log "Construction des services dans $PLATFORM_DIR..."
+  log "🔨 Construction des services dans $PLATFORM_DIR..."
   cd "$PLATFORM_DIR" || return 1
 
   find . -name "pom.xml" -print0 | while IFS= read -r -d '' pom_file; do
@@ -106,6 +121,17 @@ build_services() {
       return 1
     }
   done
+  
+  # 2 Vérification des JAR
+  for SERVICE in "${SERVICES[@]}"; do
+    verify_jar "$SERVICE"
+  done
+  
+  # 3 Construction Docker
+  docker-compose build --no-cache || {
+    log "❌ Échec de la construction des images Docker"
+    exit 1
+  }
 }
 
 # Déploiement Docker
@@ -124,7 +150,7 @@ deploy_platform() {
 verify_deployment() {
   log "Vérification des services..."
   local success=0
-  local services=("eureka-server" "config-server" "api-gateway")
+  local services=("eureka-server" "config-server" "api-gateway" "video-core" "video-storage" "video-analyzer")
 
   for service in "${services[@]}"; do
     if docker-compose -f "$COMPOSE_FILE" ps | grep -q "$service.*Up"; then
@@ -170,7 +196,7 @@ main() {
     log "URLs:"
     log "  Eureka: http://localhost:8761"
     log "  Config: http://localhost:8888"
-    log "  API Gateway: http://localhost:8080"
+    log "  API Gateway: http://localhost:8084"
   else
     log "⚠️ Déploiement partiellement réussi - certains services peuvent ne pas fonctionner"
   fi

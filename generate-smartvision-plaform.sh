@@ -24,7 +24,7 @@ CONFIG_REPO_DIR=""
 FORCE_OVERWRITE=false
 
 # Liste des services
-SERVICES=("config-server" "eureka-server" "api-gateway" "video-core" "video-analyzer" "video-storage")
+SERVICES=("eureka-server" "config-server" "api-gateway" "video-core" "video-analyzer" "video-storage")
 
 # Ports associés
 declare -A SERVICE_PORTS=(
@@ -440,6 +440,8 @@ server:
 spring:
   application:
     name: $SERVICE
+  config:
+    import:import: optional:configserver:${CONFIG_SERVER_URI:http://config-server:8888}
   cloud:
     config:
       uri: http://config-server:8888
@@ -449,11 +451,11 @@ spring:
         max-interval: 2000
         multiplier: 1.5
         max-attempts: 3
-
+    
 eureka:
   client:
     serviceUrl:
-      defaultZone: http://eureka-server:8761/eureka/
+      defaultZone: http://${PLATFORM_NAME}-eureka-server:8761/eureka/
   instance:
     prefer-ip-address: true
 
@@ -520,6 +522,32 @@ eureka:
     fetch-registry: false
 EOF
   fi
+  
+  if [ "$SERVICE" == "video-analyszer" ]; then 
+    cat >> "$SERVICE/src/test/resources/application-test.yml" <<EOF
+spring:
+  data:
+    mongodb:
+      host: mongodb
+      port: 27017
+      database: video-analyzer-test
+      auto-index-creation: true
+eureka:
+  client:
+    register-with-eureka: false
+    fetch-registry: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+
+logging:
+  level:
+    root: INFO
+EOF
+  fi
 }
 
 # Fonction pour créer la classe Main
@@ -563,15 +591,17 @@ create_main_class() {
     echo "}"
   } > "$MAIN_CLASS"
 }
+
+
 # Fonction pour créer le Dockerfile
 create_dockerfile() {
   local SERVICE=$1
   
-  cat > "$SERVICE/Dockerfile" <<EOF
-FROM eclipse-temurin:$JAVA_VERSION-jdk-alpine
+  # Cas particulier pour les services sans dépendance
+    cat > "$SERVICE/Dockerfile" <<EOF
+FROM eclipse-temurin:17-jdk-alpine
 VOLUME /tmp
-ARG JAR_FILE=target/*.jar
-COPY \${JAR_FILE} app.jar
+COPY target/smartvision-$SERVICE-0.0.1-SNAPSHOT.jar app.jar
 ENTRYPOINT ["java","-jar","/app.jar"]
 EOF
 }
@@ -619,37 +649,50 @@ services:" > docker-compose.yml
       - \"$PORT:$PORT\"
     environment:
       - SPRING_PROFILES_ACTIVE=docker" >> docker-compose.yml
-
-    if [ "$SERVICE" != "config-server" ]; then
+      
+    # Configuration réseau
+    if [ "$SERVICE" == "eureka-server" ]; then
+      echo "    networks:
+      - smartvision-net" >> docker-compose.yml
+    fi
+    
+    # Dépendances
+    if [ "$SERVICE" == "eureka-server" ]; then
       echo "    depends_on:
-      - config-server" >> docker-compose.yml
+      - config-server
+      - mongodb" >> docker-compose.yml
+    elif [ "$SERVICE" != "config-server" ]; then
+      echo "    depends_on:
+      - eureka-server" >> docker-compose.yml
     fi
-
-    if [ "$SERVICE" != "config-server" ] && [ "$SERVICE" != "eureka-server" ]; then
-      echo "      - eureka-server" >> docker-compose.yml
-    fi
-
-    # Configuration spécifique pour certains services
+        	   
+    # Dépendance spécifique pour video-analyzer
     if [ "$SERVICE" == "video-analyzer" ]; then
       echo "    depends_on:
       - mongodb" >> docker-compose.yml
     fi
   done
 
-  # Services supplémentaires (MongoDB, etc.)
+  # Services supplémentaires (MongoDB)
   echo "  mongodb:
     image: mongo:5.0
-    container_name: mongodb
+    container_name: \"${PLATFORM_NAME}-mongodb\"
     ports:
       - \"27017:27017\"
+    hostname: mongodb
     volumes:
       - mongodb_data:/data/db
     environment:
       - MONGO_INITDB_DATABASE=video-analysis
+    networks:
+      - smartvision-net
 
 volumes:
   mongodb_data:
-" >> docker-compose.yml
+
+networks:
+  smartvision-net:
+    driver: bridge" >> docker-compose.yml
 
   echo "🐳 Fichier docker-compose.yml créé avec:"
   echo "   - Services: ${SERVICES[*]}"
