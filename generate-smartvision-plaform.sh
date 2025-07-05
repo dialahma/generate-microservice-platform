@@ -262,14 +262,15 @@ generate_microservice() {
   # Créer classe Main
   create_main_class "$SERVICE" "$CLASS_NAME"
   
-  # Créer Dockerfile
-  create_dockerfile "$SERVICE"
-  
   # Créer test de base
   create_test_class "$SERVICE" "$CLASS_NAME"
   
   # Ajoutez cette ligne après la création des autres fichiers
   create_test_resources "$SERVICE"
+}
+
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $1"
 }
 
 # Fonction pour créer le pom.xml
@@ -592,18 +593,67 @@ create_main_class() {
   } > "$MAIN_CLASS"
 }
 
+# Fonction pour générer le script wait-for
+generate_wait_for_script() {
+  # Création du script ligne par ligne
+  log "📜 Génération du script wait-for.sh"
+  cat > "wait-for.sh" << 'EOF'
+#!/bin/sh
+host="$1"
+port="$2"
+shift 2
+cmd="$@"
+
+while ! nc -z "$host" "$port"; do
+  echo "⌛ Waiting for $host:$port..."
+  sleep 1
+done
+
+echo "✅ $host:$port is available!"
+exec $cmd
+EOF
+  chmod +x "wait-for.sh"
+}
 
 # Fonction pour créer le Dockerfile
 create_dockerfile() {
   local SERVICE=$1
   
+  log "🐳 Création Dockerfile pour $SERVICE"
+  
   # Cas particulier pour les services sans dépendance
+  mkdir -p "$SERVICE"  # S'assurer que le dossier existe
+  
+  if [ "$SERVICE" == "config-server" ] || [ "$SERVICE" == "mongodb" ]; then
     cat > "$SERVICE/Dockerfile" <<EOF
 FROM eclipse-temurin:17-jdk-alpine
 VOLUME /tmp
 COPY target/smartvision-$SERVICE-0.0.1-SNAPSHOT.jar app.jar
 ENTRYPOINT ["java","-jar","/app.jar"]
 EOF
+  else
+    cat > "$SERVICE/Dockerfile" <<EOF
+FROM eclipse-temurin:17-jdk-alpine
+VOLUME /tmp
+RUN apk add --no-cache netcat-openbsd
+COPY wait-for.sh /wait-for.sh
+RUN chmod +x /wait-for.sh
+COPY target/smartvision-$SERVICE-0.0.1-SNAPSHOT.jar app.jar
+ENTRYPOINT ["/wait-for.sh", "\${DEPENDENCY_HOST}", "\${DEPENDENCY_PORT}", "--", "java", "-jar", "/app.jar"]
+EOF
+  fi
+}
+
+# 4. Fonction pour copier wait-for.sh seulement quand nécessaire
+copy_wait_for_script() {
+  local SERVICE=$1
+  if [ "$SERVICE" != "config-server" ] && [ "$SERVICE" != "mongodb" ]; then
+    if [ -f "wait-for.sh" ]; then
+      echo "cp wait-for.sh '$SERVICE/' && log '📋 Copie de wait-for.sh vers $SERVICE'"
+    else
+      log "⚠️ Fichier wait-for.sh non trouvé"
+    fi
+  fi
 }
 
 # Fonction pour créer une classe de test
@@ -649,31 +699,58 @@ services:" > docker-compose.yml
       - \"$PORT:$PORT\"
     environment:
       - SPRING_PROFILES_ACTIVE=docker" >> docker-compose.yml
-      
-    # Configuration réseau
-    if [ "$SERVICE" == "eureka-server" ]; then
+
+    # Configuration spécifique
+    case "$SERVICE" in
+      "config-server")
+        echo "    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: [\"CMD\", \"curl\", \"-f\", \"http://localhost:$PORT/actuator/health\"]
+      interval: 10s
+      timeout: 5s
+      retries: 10" >> docker-compose.yml
+        ;;
+
+      "eureka-server")
+        echo "    environment:
+      - DEPENDENCY_HOST=config-server
+      - DEPENDENCY_PORT=8888
+    depends_on:
+      config-server:
+        condition: service_healthy
+    healthcheck:
+      test: [\"CMD\", \"curl\", \"-f\", \"http://localhost:$PORT/actuator/health\"]
+      interval: 10s
+      timeout: 5s
+      retries: 10" >> docker-compose.yml
+        ;;
+
+      "api-gateway"|"video-core"|"video-storage"|"video-analyzer")
+        echo "    environment:
+      - DEPENDENCY_HOST=eureka-server
+      - DEPENDENCY_PORT=8761
+    depends_on:
+      eureka-server:
+        condition: service_healthy" >> docker-compose.yml
+        
+        # Ajout spécifique pour video-analyzer
+        if [ "$SERVICE" == "video-analyzer" ]; then
+          echo "      mongodb:
+        condition: service_healthy" >> docker-compose.yml
+        fi
+        ;;
+    esac
+
+    # Configuration réseau commune
+    if [ "$SERVICE" != "mongodb" ]; then
       echo "    networks:
       - smartvision-net" >> docker-compose.yml
     fi
-    
-    # Dépendances
-    if [ "$SERVICE" == "eureka-server" ]; then
-      echo "    depends_on:
-      - config-server
-      - mongodb" >> docker-compose.yml
-    elif [ "$SERVICE" != "config-server" ]; then
-      echo "    depends_on:
-      - eureka-server" >> docker-compose.yml
-    fi
-        	   
-    # Dépendance spécifique pour video-analyzer
-    if [ "$SERVICE" == "video-analyzer" ]; then
-      echo "    depends_on:
-      - mongodb" >> docker-compose.yml
-    fi
   done
 
-  # Services supplémentaires (MongoDB)
+  # Configuration MongoDB
   echo "  mongodb:
     image: mongo:5.0
     container_name: \"${PLATFORM_NAME}-mongodb\"
@@ -684,6 +761,11 @@ services:" > docker-compose.yml
       - mongodb_data:/data/db
     environment:
       - MONGO_INITDB_DATABASE=video-analysis
+    healthcheck:
+      test: [\"CMD\", \"mongo\", \"--eval\", \"db.adminCommand('ping')\"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
       - smartvision-net
 
@@ -694,11 +776,10 @@ networks:
   smartvision-net:
     driver: bridge" >> docker-compose.yml
 
-  echo "🐳 Fichier docker-compose.yml créé avec:"
-  echo "   - Services: ${SERVICES[*]}"
-  echo "   - MongoDB pour le service video-analyzer"
+  echo "🐳 Fichier docker-compose.yml créé avec healthchecks et dépendances"
 }
-
+ 
+ 
 # Fonction principale
 main() {
   init_logging
@@ -713,6 +794,15 @@ main() {
     generate_microservice "$SERVICE" "${SERVICE_PORTS[$SERVICE]}"
   done
   
+  # 3. Générer le script d'attente
+  generate_wait_for_script
+
+  # 4. Créer les Dockerfiles et copier wait-for.sh
+  for SERVICE in "${SERVICES[@]}"; do
+    create_dockerfile "$SERVICE"
+    copy_wait_for_script "$SERVICE"
+  done
+
   create_docker_compose
   
   echo -e "\n✅ Plateforme $PLATFORM_NAME générée avec succès!"
@@ -731,6 +821,7 @@ main() {
   	local PACKAGE_NAME=$(format_package_name "$SERVICE")
   	echo "   - $SERVICE: $GROUP_ID.$PACKAGE_NAME.$CLASS_NAME"
   done
+
 }
 
 # Point d'entrée
