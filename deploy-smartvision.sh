@@ -110,24 +110,31 @@ build_services() {
   local mvn_args=()
   $SKIP_TESTS && mvn_args+=("-DskipTests")
 
-  log "🔨 Construction des services dans $PLATFORM_DIR..."
+  log "🔨 Construction des services dans l'ordre correct..."
   cd "$PLATFORM_DIR" || return 1
 
-  find . -name "pom.xml" -print0 | while IFS= read -r -d '' pom_file; do
-    service_dir=$(dirname "$pom_file")
-    log "🔨 Building $service_dir..."
-    (cd "$service_dir" && mvn clean package "${mvn_args[@]}") || {
-      log "❌ Échec de la construction de $service_dir"
+  # D'abord construire Eureka Server avec tests désactivés
+  log "🔨 Building eureka-server (tests forcément skip)..."
+  (cd "eureka-server" && mvn clean package -DskipTests) || {
+    log "❌ Échec de la construction de eureka-server"
+    return 1
+  }
+  verify_jar "eureka-server"
+
+  # Puis les autres services
+  SERVICES_ORDER=("config-server" "api-gateway" "video-core" "video-analyzer" "video-storage")
+  
+  for SERVICE in "${SERVICES_ORDER[@]}"; do
+    log "🔨 Building $SERVICE..."
+    (cd "$SERVICE" && mvn clean package "${mvn_args[@]}") || {
+      log "❌ Échec de la construction de $SERVICE"
       return 1
     }
-  done
-  
-  # 2 Vérification des JAR
-  for SERVICE in "${SERVICES[@]}"; do
     verify_jar "$SERVICE"
   done
   
-  # 3 Construction Docker
+  # Construction Docker
+  log "🐳 Construction des images Docker..."
   docker-compose build --no-cache || {
     log "❌ Échec de la construction des images Docker"
     exit 1
@@ -136,14 +143,41 @@ build_services() {
 
 # Déploiement Docker
 deploy_platform() {
-  local compose_args=("-d")
+    local compose_args=("-d")
   $FORCE_REBUILD && compose_args+=("--build")
 
-  log "🚀 Déploiement avec Docker Compose..."
-  docker-compose -f "$COMPOSE_FILE" up "${compose_args[@]}" || {
-    log "❌ Échec du déploiement Docker"
-    return 1
-  }
+  log "🚀 Déploiement avec ordre contrôlé..."
+  
+  # Démarrer d'abord les services essentiels
+  log "⏳ Démarrage de MongoDB..."
+  docker-compose up -d mongodb
+  
+  log "⏳ Attente du démarrage de MongoDB..."
+  while ! docker-compose exec -T mongodb mongosh --eval "db.adminCommand('ping')" >/dev/null 2>&1; do
+    sleep 5
+  done
+  
+  log "⏳ Démarrage du Config Server..."
+  docker-compose up -d config-server
+  
+  log "⏳ Attente du Config Server..."
+  while ! curl -s http://localhost:8888/actuator/health | grep -q '"status":"UP"'; do
+    sleep 5
+  done
+  
+  log "⏳ Démarrage d'Eureka Server..."
+  docker-compose up -d eureka-server
+  
+  log "⏳ Attente d'Eureka Server..."
+  while ! curl -s http://localhost:8761/actuator/health | grep -q '"status":"UP"'; do
+    sleep 5
+  done
+  
+  # Démarrer les autres services
+  log "⏳ Démarrage des autres services..."
+  docker-compose up -d api-gateway video-core video-analyzer video-storage
+  
+  log "✅ Tous les services ont été démarrés"
 }
 
 # Vérification des services
