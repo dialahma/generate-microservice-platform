@@ -92,7 +92,7 @@ verify_project_structure() {
 
 verify_jar() {
   local SERVICE=$1
-  local JAR_PATH="./$SERVICE/target/smartvision-$SERVICE-0.0.1-SNAPSHOT.jar"
+  local JAR_PATH="./$SERVICE/target/$SERVICE-0.0.1-SNAPSHOT.jar"
   
   if [ ! -f "$JAR_PATH" ]; then
     echo "❌ ERREUR : Fichier JAR introuvable pour $SERVICE"
