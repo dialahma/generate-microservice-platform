@@ -145,6 +145,8 @@ build_services() {
 deploy_platform() {
     local compose_args=("-d")
   $FORCE_REBUILD && compose_args+=("--build")
+  MAX_WAIT=120
+  SECONDS_WAITED=0
 
   log "🚀 Déploiement avec ordre contrôlé..."
   
@@ -153,25 +155,49 @@ deploy_platform() {
   docker-compose up -d mongodb
   
   log "⏳ Attente du démarrage de MongoDB..."
-  while ! docker-compose exec -T mongodb mongosh --eval "db.adminCommand('ping')" >/dev/null 2>&1; do
+  while ! docker-compose exec -T mongodb mongo --eval "db.adminCommand('ping')" >/dev/null 2>&1; do
     sleep 5
   done
+  
+  if ! git -C "$CONFIG_REPO_DIR" show-ref --verify --quiet refs/heads/main; then
+    log "❌ La branche 'main' est absente dans le dépôt $CONFIG_REPO_DIR"
+    log "ℹ️ Branche disponible : $(git -C "$CONFIG_REPO_DIR" branch --show-current)"
+    exit 1
+  fi
   
   log "⏳ Démarrage du Config Server..."
   docker-compose up -d config-server
   
+  log "⏳ Attente du Config Server (max ${MAX_WAIT}s)..."
+  
+  if [ ! -f "$HOME/smartvision-config-repo/api-gateway.yml" ]; then
+    echo "❌ Le fichier api-gateway.yml est manquant dans smartvision-config-repo"
+    exit 1
+  fi
+
+  if ! git -C "$HOME/smartvision-config-repo" rev-parse --verify main > /dev/null 2>&1; then
+    echo "❌ La branche 'main' est absente ou incorrecte dans smartvision-config-repo"
+    exit 1
+  fi
+
   log "⏳ Attente du Config Server..."
-  while ! curl -s http://localhost:8888/actuator/health | grep -q '"status":"UP"'; do
+  while ! curl -s http://localhost:8888/actuator/health | grep -q '"status":"UP"' || [ $SECONDS_WAITED -ge $MAX_WAIT ]; do
     sleep 5
+    SECONDS_WAITED=$((SECONDS_WAITED + 5))
   done
+  if [ $SECONDS_WAITED -ge $MAX_WAIT ]; then
+    log "⚠️ Timeout atteint. Le Config Server est lent ou instable (status = $(curl -s http://localhost:8888/actuator/health))."
+  else
+    log "✔️ Config Server opérationnel après ${SECONDS_WAITED}s"
+  fi
   
   log "⏳ Démarrage d'Eureka Server..."
   docker-compose up -d eureka-server
   
-  log "⏳ Attente d'Eureka Server..."
+  log "⏳ Attente d'Eureka Server (max ${MAX_WAIT}s)..."
   while ! curl -s http://localhost:8761/actuator/health | grep -q '"status":"UP"'; do
     sleep 5
-  done
+  done 
   
   # Démarrer les autres services
   log "⏳ Démarrage des autres services..."

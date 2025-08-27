@@ -23,8 +23,8 @@ SERVICES=("config-server" "eureka-server" "api-gateway" "video-core" "video-anal
 declare -A SERVICE_PORTS=(
   ["config-server"]=8888
   ["eureka-server"]=8761
-  ["api-gateway"]=8080
-  ["video-core"]=8081
+  ["api-gateway"]=8084
+  ["video-core"]=8085
   ["video-analyzer"]=8082
   ["video-storage"]=8083
 )
@@ -143,16 +143,41 @@ esac
     <spring-cloud.version>$SPRINGCLOUD_VERSION</spring-cloud.version>
   </properties>
   <dependencies>
-    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
     $DEPENDENCIES
-    <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
-    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <dependencyManagement>
     <dependencies>
-      <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-dependencies</artifactId><version>\${spring-cloud.version}</version><type>pom</type><scope>import</scope></dependency>
+      <dependency>
+        <groupId>org.springframework.cloud</groupId>
+        <artifactId>spring-cloud-dependencies</artifactId>
+        <version>\${spring-cloud.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
     </dependencies>
   </dependencyManagement>
+  <build>
+     <plugins>
+       <plugin>
+         <groupId>org.springframework.boot</groupId>
+         <artifactId>spring-boot-maven-plugin</artifactId>
+       </plugin>
+     </plugins>
+  </build>
 </project>
 EOF
 
@@ -202,23 +227,6 @@ eureka:
     enabled: false
 EOF
 
-  # bootstrap.yml
-  cat <<EOF > "$SERVICE_DIR/src/main/resources/bootstrap.yml"
-spring:
-  application:
-    name: $SERVICE_NAME
-  cloud:
-    config:
-      uri: http://localhost:8888
-eureka:
-  client:
-    service-url:
-      defaultZone: http://localhost:8761/eureka/
-EOF
-
-  echo "server:
-  port: $PORT" > "$SERVICE_DIR/src/main/resources/application.yml"
-
   # Dockerfile
   cat <<EOF > "$SERVICE_DIR/Dockerfile"
 FROM eclipse-temurin:$JAVA_VERSION-jdk-alpine
@@ -230,12 +238,81 @@ EOF
   echo -e "${GREEN}✅ $SERVICE_NAME généré avec port $PORT${NC}"
 }
 
+generate_resource_files() {
+  local SERVICE_NAME="$1"
+  local SERVICE_DIR="$2"
+  local SERVICE_PORT="$3"
+
+  mkdir -p "$SERVICE_DIR/src/main/resources"
+
+  if [[ "$SERVICE_NAME" == "config-server" ]]; then
+    # config-server : uniquement application.yml
+    cat > "$SERVICE_DIR/src/main/resources/application.yml" <<EOF
+server:
+  port: $SERVICE_PORT
+spring:
+  application:
+    name: config-server
+  cloud:
+    config:
+      server:
+        git:
+          uri: file:$HOME/smartvision-config-repo
+          clone-on-start: true
+          default-label: main
+EOF
+  else
+    # Clients (y compris eureka-server) : bootstrap.yml uniquement
+    cat > "$SERVICE_DIR/src/main/resources/bootstrap.yml" <<EOF
+spring:
+  application:
+    name: $SERVICE_NAME
+  cloud:
+    config:
+      uri: http://localhost:8888
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+EOF
+  fi
+}
+
+
+generate_config_repo_file() {
+  local SERVICE_NAME="$1"
+  local SERVICE_PORT="$2"
+
+  mkdir -p "$HOME/smartvision-config-repo"
+
+  cat > "$HOME/smartvision-config-repo/$SERVICE_NAME.yml" <<EOF
+server:
+  port: $SERVICE_PORT
+
+spring:
+  application:
+    name: $SERVICE_NAME
+
+# Ajoutez ici des propriétés spécifiques à ce microservice si besoin
+EOF
+}
+
 # 🐳 docker-compose.yml
 generate_docker_compose() {
   cat <<EOF > "$PLATFORM_NAME/docker-compose.yml"
 version: '3.8'
-
 services:
+  mongodb:
+    image: mongo:4.4
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 EOF
 
   for SERVICE in "${SERVICES[@]}"; do
@@ -251,6 +328,10 @@ EOF
       interval: 10s
       timeout: 5s
       retries: 5
+    volumes:
+      - /home/ahdiallo/smartvision-config-repo:/home/ahdiallo/smartvision-config-repo
+    environment: 
+      - HOME=/home/ahdiallo
 EOF
     if [[ "$SERVICE" != "config-server" ]]; then
       echo "    depends_on:" >> "$PLATFORM_NAME/docker-compose.yml"
@@ -271,7 +352,11 @@ main() {
   mkdir -p "$PLATFORM_NAME"
   generate_gitignore
   generate_readme
-  for SERVICE in "${SERVICES[@]}"; do create_service "$SERVICE"; done
+  for SERVICE in "${SERVICES[@]}"; do 
+    create_service "$SERVICE"; 
+    generate_resource_files "$SERVICE" "$PLATFORM_NAME/$SERVICE" "${SERVICE_PORTS[$SERVICE]}"
+    generate_config_repo_file "$SERVICE" "${SERVICE_PORTS[$SERVICE]}"
+  done
   generate_docker_compose
   echo -e "${GREEN}🎉 Plateforme $PLATFORM_NAME générée avec succès !${NC}"
 }
