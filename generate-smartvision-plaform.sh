@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ##############################################
-# 🚀 SmartVision Platform Generator - VERSION FINALE COMPLÈTE
+# 🚀 SmartVision Platform Generator - VERSION CORRIGÉE
 # Microservices Spring Boot + Spring Cloud
 # Avec tests unitaires et gestion des variables d'environnement
 ##############################################
@@ -28,14 +28,25 @@ declare -A SPRING_CLOUD_VERSIONS=(
   ["3.2.0"]="2023.0.0"
 )
 
-# 🔧 Configuration par défaut
-PLATFORM_NAME="smartvision-platform"
-GROUP_ID="net.smart.vision"
-JAVA_VERSION="17"
-SPRINGBOOT_VERSION="3.4.7"
-INIT_CONFIG_REPO=false
-FORCE=false
-INIT_REPO_PATH="$HOME/smartvision-config-repo"
+# Fonction pour initialiser les valeurs par défaut
+init_defaults() {
+  # 🔧 Configuration par défaut
+  PLATFORM_NAME="smartvision-platform"
+  GROUP_ID="net.smart.vision"
+  JAVA_VERSION="17"
+  SPRINGBOOT_VERSION="3.4.7"
+  INIT_CONFIG_REPO=false
+  FORCE=false
+  INIT_REPO_PATH="$HOME/smartvision-config-repo"
+  
+  # Déterminer la version de Spring Cloud
+  SPRINGCLOUD_VERSION=${SPRING_CLOUD_VERSIONS[$SPRINGBOOT_VERSION]}
+  if [ -z "$SPRINGCLOUD_VERSION" ]; then
+    echo "⚠️ Version Spring Cloud non trouvée pour Spring Boot $SPRINGBOOT_VERSION"
+    echo "Versions supportées: ${!SPRING_CLOUD_VERSIONS[@]}"
+    exit 1
+  fi
+}
 
 # Services avec ports
 SERVICES=("config-server" "eureka-server" "api-gateway" "video-core" "video-analyzer" "video-storage")
@@ -47,6 +58,23 @@ declare -A SERVICE_PORTS=(
   ["video-analyzer"]=8082
   ["video-storage"]=8083
 )
+
+# 🎛️ Arguments
+parse_arguments() {
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      --platform-name) PLATFORM_NAME="$2"; shift ;;
+      --group-id) GROUP_ID="$2"; shift ;;
+      --java-version) JAVA_VERSION="$2"; shift ;;
+      --springboot-version) SPRINGBOOT_VERSION="$2"; shift ;;
+      --init-config-repo) INIT_CONFIG_REPO=true; INIT_REPO_PATH="$2"; shift ;;
+      --force) FORCE=true ;;
+      --help) show_usage ;;
+      *) echo "❌ Argument inconnu $1"; exit 1 ;;
+    esac
+    shift
+  done
+}
 
 # 📋 Aide
 show_usage() {
@@ -69,10 +97,92 @@ EOF
   exit 0
 }
 
+# Fonction pour vérifier les prérequis
+check_prerequisites() {
+  if [ -d "$PLATFORM_NAME" ] && [ "$FORCE" = false ]; then
+    error "Le dossier $PLATFORM_NAME existe déjà. Utilisez --force pour écraser."
+    exit 1
+  fi
+
+  if ! command -v java &> /dev/null; then
+    error "Java n'est pas installé"
+    exit 1
+  fi
+
+  if ! command -v docker &> /dev/null; then
+    warn "Docker n'est pas installé - certaines fonctionnalités ne fonctionneront pas"
+  fi
+}
+
+# Fonction pour créer la structure du projet
+create_project_structure() {
+  log "🚀 Génération de la plateforme $PLATFORM_NAME..."
+  
+  if [ "$FORCE" = true ] && [ -d "$PLATFORM_NAME" ]; then
+    log "♻️ Écrasement du dossier existant..."
+    rm -rf "$PLATFORM_NAME"
+  fi
+  
+  mkdir -p "$PLATFORM_NAME"
+  
+  # Créer les fichiers de projet
+  create_gitignore
+  generate_project_files
+  generate_docker_compose
+}
+
+# Fonction pour créer le .gitignore
+create_gitignore() {
+  cat > "$PLATFORM_NAME/.gitignore" <<EOF
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+bin/
+build/
+target/
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Autres
+*.swp
+*.swo
+.DS_Store
+.env
+*.bak
+*.tmp
+
+# Configuration locale
+/config-repo/
+EOF
+  success "Fichier .gitignore créé"
+}
+
 # 📂 Initialisation du dépôt de configuration
 init_config_repo() {
-  local repo_path="${1:-$INIT_REPO_PATH}"
-  log "Initialisation du dépôt de configuration: $repo_path"
+  local repo_path="$INIT_REPO_PATH"
+  
+  # Vérifier si un chemin personnalisé a été fourni via les arguments
+  for arg in "$@"; do
+    if [[ "$arg" == "--init-config-repo" ]]; then
+      # Le prochain argument est le chemin
+      shift
+      repo_path="$1"
+      break
+    fi
+  done
+
+  log "📂 Initialisation du dépôt de configuration: $repo_path"
   
   mkdir -p "$repo_path"
   cd "$repo_path" || exit 1
@@ -91,6 +201,9 @@ init_config_repo() {
   else
     warn "Dépôt de configuration existe déjà: $repo_path"
   fi
+  
+  # Revenir au répertoire original
+  cd - > /dev/null
 }
 
 # 📄 Génération des fichiers de configuration pour le dépôt
@@ -199,6 +312,11 @@ create_service() {
     return
   fi
 
+  # Supprimer le service existant si --force est utilisé
+  if [[ "$FORCE" == true && -d "$SERVICE_DIR" ]]; then
+    rm -rf "$SERVICE_DIR"
+  fi
+
   mkdir -p "$SERVICE_DIR/src/main/java" "$SERVICE_DIR/src/main/resources"
   mkdir -p "$SERVICE_DIR/src/test/java" "$SERVICE_DIR/src/test/resources"
 
@@ -276,7 +394,7 @@ create_service() {
   </parent>
   <groupId>$GROUP_ID</groupId>
   <artifactId>$SERVICE_NAME</artifactId>
-  <version>0.0.1-SNASHOT</version>
+  <version>0.0.1-SNAPSHOT</version>
   <properties>
     <java.version>$JAVA_VERSION</java.version>
     <spring-cloud.version>$SPRINGCLOUD_VERSION</spring-cloud.version>
@@ -352,6 +470,12 @@ create_service() {
             <phase>test</phase>
             <goals>
               <goal>report</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>check</id>
+            <goals>
+              <goal>check</goal>
             </goals>
           </execution>
         </executions>
@@ -489,7 +613,7 @@ EOF
   fi
 }
 
-# 🧪 Génération des tests unitaires - VERSION CORRIGÉE
+# 🧪 Génération des tests unitaires
 generate_unit_tests() {
   local SERVICE_NAME="$1"
   local SERVICE_DIR="$2"
@@ -497,7 +621,7 @@ generate_unit_tests() {
   local PACKAGE_SAFE="$4"
   local PACKAGE_DIR=$(echo "$GROUP_ID" | sed 's/\./\//g')/$PACKAGE_SAFE
 
-  # ✅ CRÉER LE RÉPERTOIRE AVANT TOUTE CHOSE
+  # Créer le répertoire de test
   mkdir -p "$SERVICE_DIR/src/test/java/$PACKAGE_DIR"
 
   # Test de l'application principale
@@ -662,7 +786,7 @@ services:
     ports:
       - "8888:8888"
     volumes:
-      - \$HOME/smartvision-config-repo:/config-repo
+      - \${CONFIG_REPO_PATH:-$HOME/smartvision-config-repo}:/config-repo
     environment:
       - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=file:/config-repo
       - CONFIG_REPO_BRANCH=\${CONFIG_REPO_BRANCH:-main}
@@ -739,23 +863,12 @@ networks:
 # SPRING_PROFILES_ACTIVE=docker
 # CONFIG_REPO_BRANCH=main
 # MONGODB_URI=mongodb://mongodb:27017/smartvision
+# CONFIG_REPO_PATH=/chemin/vers/votre/depot/config
 EOF
 }
 
 # 📋 Génération des fichiers de projet
 generate_project_files() {
-  # .gitignore
-  cat > "$PLATFORM_NAME/.gitignore" <<EOF
-target/
-.idea/
-*.iml
-.DS_Store
-*.log
-.env
-*.jar
-docker-compose.override.yml
-EOF
-
   # .env.example
   cat > "$PLATFORM_NAME/.env.example" <<EOF
 # Configuration Docker Compose
@@ -764,6 +877,7 @@ CONFIG_URI=http://config-server:8888
 SPRING_PROFILES_ACTIVE=docker
 CONFIG_REPO_BRANCH=main
 MONGODB_URI=mongodb://mongodb:27017/smartvision
+CONFIG_REPO_PATH=$INIT_REPO_PATH
 EOF
 
   # README.md
@@ -801,6 +915,7 @@ Les variables peuvent être définies dans un fichier \`.env\` à la racine:
 - \`SPRING_PROFILES_ACTIVE\`: Profils Spring actifs
 - \`CONFIG_REPO_BRANCH\`: Branche du dépôt de configuration
 - \`MONGODB_URI\`: URI de connexion MongoDB
+- \`CONFIG_REPO_PATH\`: Chemin vers le dépôt de configuration
 
 ## Tests
 
@@ -817,25 +932,15 @@ EOF
 # 🎯 Fonction principale
 main() {
   log "Démarrage de la génération de la plateforme..."
-  
-  # Initialiser le repo seulement si demandé
-  if [[ "$INIT_CONFIG_REPO" == true ]]; then
-    init_config_repo "$INIT_REPO_PATH"
-  fi
-  
-  SPRINGCLOUD_VERSION="${SPRING_CLOUD_VERSIONS[$SPRINGBOOT_VERSION]}"
-  [[ "$FORCE" == true ]] && rm -rf "$PLATFORM_NAME"
-  
-  mkdir -p "$PLATFORM_NAME"
+  parse_arguments "$@"
+  init_defaults
+  check_prerequisites
+  create_project_structure
   
   # Création des services
   for SERVICE in "${SERVICES[@]}"; do
     create_service "$SERVICE"
   done
-  
-  # Génération des fichiers de projet
-  generate_project_files
-  generate_docker_compose
   
   success "Plateforme $PLATFORM_NAME générée avec succès!"
   log "Prochaines étapes:"
@@ -844,22 +949,13 @@ main() {
   log "3. mvn clean package (pour chaque service)"
   log "4. docker-compose build"
   log "5. docker-compose up -d"
+  
+  # Créer le dossier de configuration centralisée si demandé
+  if [ "$INIT_CONFIG_REPO" = true ]; then
+    init_config_repo "$@"
+    log "📂 Dossier de configuration créé: $INIT_REPO_PATH"
+  fi
 }
 
-# 🎛️ Arguments
-while [[ "$#" -gt 0 ]]; do
-  case $1 in
-    --platform-name) PLATFORM_NAME="$2"; shift ;;
-    --group-id) GROUP_ID="$2"; shift ;;
-    --java-version) JAVA_VERSION="$2"; shift ;;
-    --springboot-version) SPRINGBOOT_VERSION="$2"; shift ;;
-    --init-config-repo) INIT_CONFIG_REPO=true; INIT_REPO_PATH="$2"; shift ;;
-    --force) FORCE=true ;;
-    --help) show_usage ;;
-    *) echo "❌ Argument inconnu $1"; exit 1 ;;
-  esac
-  shift
-done
-
 # Exécution
-main
+main "$@"
