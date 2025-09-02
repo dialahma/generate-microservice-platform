@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ##############################################
-# 🚀 SmartVision Platform Generator - VERSION CORRIGÉE
+# 🚀 SmartVision Platform Generator - VERSION COMPLÈTEMENT CORRIGÉE
 # Microservices Spring Boot + Spring Cloud
 # Avec tests unitaires et gestion des variables d'environnement
 ##############################################
@@ -28,25 +28,15 @@ declare -A SPRING_CLOUD_VERSIONS=(
   ["3.2.0"]="2023.0.0"
 )
 
-# Fonction pour initialiser les valeurs par défaut
-init_defaults() {
-  # 🔧 Configuration par défaut
-  PLATFORM_NAME="smartvision-platform"
-  GROUP_ID="net.smart.vision"
-  JAVA_VERSION="17"
-  SPRINGBOOT_VERSION="3.4.7"
-  INIT_CONFIG_REPO=false
-  FORCE=false
-  INIT_REPO_PATH="$HOME/smartvision-config-repo"
-  
-  # Déterminer la version de Spring Cloud
-  SPRINGCLOUD_VERSION=${SPRING_CLOUD_VERSIONS[$SPRINGBOOT_VERSION]}
-  if [ -z "$SPRINGCLOUD_VERSION" ]; then
-    echo "⚠️ Version Spring Cloud non trouvée pour Spring Boot $SPRINGBOOT_VERSION"
-    echo "Versions supportées: ${!SPRING_CLOUD_VERSIONS[@]}"
-    exit 1
-  fi
-}
+# Variables globales
+PLATFORM_NAME="smartvision-platform"
+GROUP_ID="net.smart.vision"
+JAVA_VERSION="17"
+SPRINGBOOT_VERSION="3.4.7"
+INIT_CONFIG_REPO=false
+FORCE=false
+INIT_REPO_PATH="$HOME/smartvision-config-repo"
+SPRINGCLOUD_VERSION=""
 
 # Services avec ports
 SERVICES=("config-server" "eureka-server" "api-gateway" "video-core" "video-analyzer" "video-storage")
@@ -61,18 +51,43 @@ declare -A SERVICE_PORTS=(
 
 # 🎛️ Arguments
 parse_arguments() {
-  while [[ "$#" -gt 0 ]]; do
-    case $1 in
-      --platform-name) PLATFORM_NAME="$2"; shift ;;
-      --group-id) GROUP_ID="$2"; shift ;;
-      --java-version) JAVA_VERSION="$2"; shift ;;
-      --springboot-version) SPRINGBOOT_VERSION="$2"; shift ;;
-      --init-config-repo) INIT_CONFIG_REPO=true; INIT_REPO_PATH="$2"; shift ;;
-      --force) FORCE=true ;;
-      --help) show_usage ;;
-      *) echo "❌ Argument inconnu $1"; exit 1 ;;
+  local args=("$@")
+  local i=0
+  while [[ $i -lt ${#args[@]} ]]; do
+    case ${args[i]} in
+      --platform-name) 
+        PLATFORM_NAME="${args[i+1]}"
+        ((i++))
+        ;;
+      --group-id) 
+        GROUP_ID="${args[i+1]}"
+        ((i++))
+        ;;
+      --java-version) 
+        JAVA_VERSION="${args[i+1]}"
+        ((i++))
+        ;;
+      --springboot-version) 
+        SPRINGBOOT_VERSION="${args[i+1]}"
+        ((i++))
+        ;;
+      --init-config-repo) 
+        INIT_CONFIG_REPO=true
+        INIT_REPO_PATH="${args[i+1]}"
+        ((i++))
+        ;;
+      --force) 
+        FORCE=true
+        ;;
+      --help) 
+        show_usage
+        ;;
+      *) 
+        error "Argument inconnu ${args[i]}"
+        exit 1
+        ;;
     esac
-    shift
+    ((i++))
   done
 }
 
@@ -170,37 +185,38 @@ EOF
 
 # 📂 Initialisation du dépôt de configuration
 init_config_repo() {
-  local repo_path="$INIT_REPO_PATH"
+  local repo_path="$1"
   
-  # Vérifier si un chemin personnalisé a été fourni via les arguments
-  for arg in "$@"; do
-    if [[ "$arg" == "--init-config-repo" ]]; then
-      # Le prochain argument est le chemin
-      shift
-      repo_path="$1"
-      break
-    fi
-  done
-
+  if [ -z "$repo_path" ]; then
+    repo_path="$INIT_REPO_PATH"
+  fi
+  
   log "📂 Initialisation du dépôt de configuration: $repo_path"
   
+  # Créer le répertoire s'il n'existe pas
   mkdir -p "$repo_path"
-  cd "$repo_path" || exit 1
   
-  if [[ ! -d .git ]]; then
-    git init
-    # Fichiers de configuration de base
-    for SERVICE in "${SERVICES[@]}"; do
-      generate_config_repo_file "$SERVICE" "${SERVICE_PORTS[$SERVICE]}" "$repo_path"
-    done
-    git add .
-    git config user.email "generator@smartvision"
-    git config user.name "SmartVision Generator"
-    git commit -m "Initial commit: Configuration des microservices"
-    success "Dépôt de configuration initialisé: $repo_path"
-  else
+  # Vérifier si c'est déjà un dépôt git
+  if [ -d "$repo_path/.git" ]; then
     warn "Dépôt de configuration existe déjà: $repo_path"
+    return
   fi
+  
+  # Initialiser le dépôt git
+  cd "$repo_path" || exit 1
+  git init
+  
+  # Fichiers de configuration de base
+  for SERVICE in "${SERVICES[@]}"; do
+    generate_config_repo_file "$SERVICE" "${SERVICE_PORTS[$SERVICE]}" "$repo_path"
+  done
+  
+  git add .
+  git config user.email "generator@smartvision"
+  git config user.name "SmartVision Generator"
+  git commit -m "Initial commit: Configuration des microservices"
+  
+  success "Dépôt de configuration initialisé: $repo_path"
   
   # Revenir au répertoire original
   cd - > /dev/null
@@ -373,6 +389,11 @@ create_service() {
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-mongodb</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>de.flapdoodle.embed</groupId>
+      <artifactId>de.flapdoodle.embed.mongo</artifactId>
+      <scope>test</scope>
     </dependency>"
       IMPORTS="import org.springframework.cloud.client.discovery.EnableDiscoveryClient;"
       ANNOTATION='@EnableDiscoveryClient
@@ -406,7 +427,7 @@ create_service() {
     </dependency>
     $DEPENDENCIES
     <dependency>
-      <groupId>org.springframework.cloud</groupId>
+     <groupId>org.springframework.cloud</groupId>
       <artifactId>spring-cloud-starter-config</artifactId>
     </dependency>
     <dependency>
@@ -470,12 +491,6 @@ create_service() {
             <phase>test</phase>
             <goals>
               <goal>report</goal>
-            </goals>
-          </execution>
-          <execution>
-            <id>check</id>
-            <goals>
-              <goal>check</goal>
             </goals>
           </execution>
         </executions>
@@ -589,6 +604,24 @@ spring:
   cloud:
     config:
       uri: \${CONFIG_URI:http://localhost:8888}
+
+# Configuration pour le développement test      
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+  cloud:
+    config:
+      enabled: false
+# Configuration MongoDB pour les tests
+  data:
+    mongodb:
+      embedded:
+        version: 4.4.0
+      host: localhost
+      port: 0
+      database: test_${SERVICE_NAME}
 EOF
 
     # bootstrap-test.yml pour les tests
@@ -597,18 +630,9 @@ spring:
   cloud:
     config:
       enabled: false
-
 eureka:
   client:
-    enabled: false
-
-# Configuration MongoDB pour les tests
-spring:
-  data:
-    mongodb:
-      host: localhost
-      port: 27017
-      database: test_${SERVICE_NAME}
+    enabled: false  
 EOF
   fi
 }
@@ -786,7 +810,7 @@ services:
     ports:
       - "8888:8888"
     volumes:
-      - \${CONFIG_REPO_PATH:-$HOME/smartvision-config-repo}:/config-repo
+      - \${CONFIG_REPO_PATH:-$INIT_REPO_PATH}:/config-repo
     environment:
       - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=file:/config-repo
       - CONFIG_REPO_BRANCH=\${CONFIG_REPO_BRANCH:-main}
@@ -863,7 +887,7 @@ networks:
 # SPRING_PROFILES_ACTIVE=docker
 # CONFIG_REPO_BRANCH=main
 # MONGODB_URI=mongodb://mongodb:27017/smartvision
-# CONFIG_REPO_PATH=/chemin/vers/votre/depot/config
+# CONFIG_REPO_PATH=$INIT_REPO_PATH
 EOF
 }
 
@@ -933,7 +957,15 @@ EOF
 main() {
   log "Démarrage de la génération de la plateforme..."
   parse_arguments "$@"
-  init_defaults
+  
+  # Déterminer la version de Spring Cloud
+  SPRINGCLOUD_VERSION=${SPRING_CLOUD_VERSIONS[$SPRINGBOOT_VERSION]}
+  if [ -z "$SPRINGCLOUD_VERSION" ]; then
+    error "Version Spring Cloud non trouvée pour Spring Boot $SPRINGBOOT_VERSION"
+    echo "Versions supportées: ${!SPRING_CLOUD_VERSIONS[@]}"
+    exit 1
+  fi
+  
   check_prerequisites
   create_project_structure
   
@@ -952,8 +984,7 @@ main() {
   
   # Créer le dossier de configuration centralisée si demandé
   if [ "$INIT_CONFIG_REPO" = true ]; then
-    init_config_repo "$@"
-    log "📂 Dossier de configuration créé: $INIT_REPO_PATH"
+    init_config_repo "$INIT_REPO_PATH"
   fi
 }
 
