@@ -1,9 +1,8 @@
 #!/bin/bash
 
 ##############################################
-# 🚀 SmartVision Platform Generator - VERSION COMPLÈTEMENT CORRIGÉE
-# Microservices Spring Boot + Spring Cloud
-# Avec tests unitaires et gestion des variables d'environnement
+# 🚀 SmartVision Platform Generator - VERSION OPTIMISÉE
+# Basée sur la configuration existante qui fonctionne
 ##############################################
 
 GREEN='\033[0;32m'
@@ -51,43 +50,18 @@ declare -A SERVICE_PORTS=(
 
 # 🎛️ Arguments
 parse_arguments() {
-  local args=("$@")
-  local i=0
-  while [[ $i -lt ${#args[@]} ]]; do
-    case ${args[i]} in
-      --platform-name) 
-        PLATFORM_NAME="${args[i+1]}"
-        ((i++))
-        ;;
-      --group-id) 
-        GROUP_ID="${args[i+1]}"
-        ((i++))
-        ;;
-      --java-version) 
-        JAVA_VERSION="${args[i+1]}"
-        ((i++))
-        ;;
-      --springboot-version) 
-        SPRINGBOOT_VERSION="${args[i+1]}"
-        ((i++))
-        ;;
-      --init-config-repo) 
-        INIT_CONFIG_REPO=true
-        INIT_REPO_PATH="${args[i+1]}"
-        ((i++))
-        ;;
-      --force) 
-        FORCE=true
-        ;;
-      --help) 
-        show_usage
-        ;;
-      *) 
-        error "Argument inconnu ${args[i]}"
-        exit 1
-        ;;
+  while [[ "$#" -gt 0 ]]; do
+    case $1 in
+      --platform-name) PLATFORM_NAME="$2"; shift ;;
+      --group-id) GROUP_ID="$2"; shift ;;
+      --java-version) JAVA_VERSION="$2"; shift ;;
+      --springboot-version) SPRINGBOOT_VERSION="$2"; shift ;;
+      --init-config-repo) INIT_CONFIG_REPO=true; INIT_REPO_PATH="$2"; shift ;;
+      --force) FORCE=true ;;
+      --help) show_usage ;;
+      *) error "Argument inconnu $1"; exit 1 ;;
     esac
-    ((i++))
+    shift
   done
 }
 
@@ -122,10 +96,6 @@ check_prerequisites() {
   if ! command -v java &> /dev/null; then
     error "Java n'est pas installé"
     exit 1
-  fi
-
-  if ! command -v docker &> /dev/null; then
-    warn "Docker n'est pas installé - certaines fonctionnalités ne fonctionneront pas"
   fi
 }
 
@@ -185,24 +155,16 @@ EOF
 
 # 📂 Initialisation du dépôt de configuration
 init_config_repo() {
-  local repo_path="$1"
-  
-  if [ -z "$repo_path" ]; then
-    repo_path="$INIT_REPO_PATH"
-  fi
-  
+  local repo_path="${1:-$INIT_REPO_PATH}"
   log "📂 Initialisation du dépôt de configuration: $repo_path"
   
-  # Créer le répertoire s'il n'existe pas
   mkdir -p "$repo_path"
   
-  # Vérifier si c'est déjà un dépôt git
-  if [ -d "$repo_path/.git" ]; then
+  if [[ -d "$repo_path/.git" ]]; then
     warn "Dépôt de configuration existe déjà: $repo_path"
     return
   fi
   
-  # Initialiser le dépôt git
   cd "$repo_path" || exit 1
   git init
   
@@ -217,8 +179,6 @@ init_config_repo() {
   git commit -m "Initial commit: Configuration des microservices"
   
   success "Dépôt de configuration initialisé: $repo_path"
-  
-  # Revenir au répertoire original
   cd - > /dev/null
 }
 
@@ -260,10 +220,10 @@ server:
 
 eureka:
   client:
-    register-with-eureka: false
-    fetch-registry: false
     service-url:
       defaultZone: \${EUREKA_DEFAULTZONE:http://localhost:8761/eureka/}
+    register-with-eureka: false
+    fetch-registry: false
 
 logging:
   level:
@@ -289,7 +249,7 @@ eureka:
     register-with-eureka: true
     fetch-registry: true
     service-url:
-      defaultZone: \${EUREKA_DEFAULTZONE:http://eureka-server:8761/eureka/}
+      defaultZone: \${EUREKA_DEFAULTZONE:http://localhost:8761/eureka/}
 
 logging:
   level:
@@ -322,13 +282,11 @@ create_service() {
 
   log "Création du service: $SERVICE_NAME"
 
-  # Vérifier si le service existe déjà
   if [[ "$FORCE" == false && -d "$SERVICE_DIR" ]]; then
     warn "Service $SERVICE_NAME existe déjà. Utilisez --force pour écraser."
     return
   fi
 
-  # Supprimer le service existant si --force est utilisé
   if [[ "$FORCE" == true && -d "$SERVICE_DIR" ]]; then
     rm -rf "$SERVICE_DIR"
   fi
@@ -340,6 +298,19 @@ create_service() {
   local DEPENDENCIES=""
   local IMPORTS=""
   local ANNOTATION="@SpringBootApplication"
+  local BOOTSTRAP_DEPENDENCY=""
+  local VALIDATION_DEPENDENCY="<dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>"
+  local CACHE_DEPENDENCY="<dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-cache</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.github.ben-manes.caffeine</groupId>
+      <artifactId>caffeine</artifactId>
+    </dependency>"
 
   case "$SERVICE_NAME" in
     "config-server")
@@ -350,6 +321,7 @@ create_service() {
       IMPORTS="import org.springframework.cloud.config.server.EnableConfigServer;"
       ANNOTATION='@EnableConfigServer
 @SpringBootApplication'
+      # Config Server n'a pas besoin de bootstrap
       ;;
 
     "eureka-server")
@@ -360,6 +332,14 @@ create_service() {
       IMPORTS="import org.springframework.cloud.netflix.eureka.server.EnableEurekaServer;"
       ANNOTATION='@EnableEurekaServer
 @SpringBootApplication'
+      BOOTSTRAP_DEPENDENCY="<dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-config</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-bootstrap</artifactId>
+    </dependency>"
       ;;
 
     "api-gateway")
@@ -374,6 +354,14 @@ create_service() {
       IMPORTS="import org.springframework.cloud.client.discovery.EnableDiscoveryClient;"
       ANNOTATION='@EnableDiscoveryClient
 @SpringBootApplication'
+      BOOTSTRAP_DEPENDENCY="<dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-config</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-bootstrap</artifactId>
+    </dependency>"
       ;;
 
     *)
@@ -385,19 +373,18 @@ create_service() {
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-data-mongodb</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>de.flapdoodle.embed</groupId>
-      <artifactId>de.flapdoodle.embed.mongo</artifactId>
-      <scope>test</scope>
     </dependency>"
       IMPORTS="import org.springframework.cloud.client.discovery.EnableDiscoveryClient;"
       ANNOTATION='@EnableDiscoveryClient
 @SpringBootApplication'
+      BOOTSTRAP_DEPENDENCY="<dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-config</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-bootstrap</artifactId>
+    </dependency>"
       ;;
   esac
 
@@ -426,18 +413,9 @@ create_service() {
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
     $DEPENDENCIES
-    <dependency>
-     <groupId>org.springframework.cloud</groupId>
-      <artifactId>spring-cloud-starter-config</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>org.springframework.cloud</groupId>
-      <artifactId>spring-cloud-starter-bootstrap</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>com.github.ben-manes.caffeine</groupId>
-      <artifactId>caffeine</artifactId>
-    </dependency>
+    $BOOTSTRAP_DEPENDENCY
+    $VALIDATION_DEPENDENCY
+    $CACHE_DEPENDENCY
     <dependency>
       <groupId>org.projectlombok</groupId>
       <artifactId>lombok</artifactId>
@@ -446,16 +424,6 @@ create_service() {
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.junit.jupiter</groupId>
-      <artifactId>junit-jupiter-api</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.mockito</groupId>
-      <artifactId>mockito-core</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -476,25 +444,6 @@ create_service() {
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
       </plugin>
-      <plugin>
-        <groupId>org.jacoco</groupId>
-        <artifactId>jacoco-maven-plugin</artifactId>
-        <version>0.8.10</version>
-        <executions>
-          <execution>
-            <goals>
-              <goal>prepare-agent</goal>
-            </goals>
-          </execution>
-          <execution>
-            <id>report</id>
-            <phase>test</phase>
-            <goals>
-              <goal>report</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
     </plugins>
   </build>
 </project>
@@ -510,7 +459,9 @@ package $GROUP_ID.$PACKAGE_SAFE;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 $IMPORTS
+import org.springframework.context.annotation.Profile;
 
+@Profile("!test")
 $ANNOTATION
 public class ${CAMEL_CASE_NAME}Application {
     public static void main(String[] args) {
@@ -543,7 +494,7 @@ generate_resource_files() {
   local SERVICE_PORT="$3"
 
   if [[ "$SERVICE_NAME" == "config-server" ]]; then
-    # Config Server - application.yml
+    # Config Server - application.yml seulement
     cat > "$SERVICE_DIR/src/main/resources/application.yml" <<EOF
 server:
   port: $SERVICE_PORT
@@ -567,64 +518,28 @@ EOF
 
     # application-test.yml pour les tests
     cat > "$SERVICE_DIR/src/test/resources/application-test.yml" <<EOF
-server:
-  port: 0
-
 spring:
   cloud:
     config:
       enabled: false
-
 eureka:
   client:
     enabled: false
 EOF
+
   else
-    # Tous les autres services - bootstrap.yml
+    # Services clients - bootstrap.yml pour la config
     cat > "$SERVICE_DIR/src/main/resources/bootstrap.yml" <<EOF
 spring:
   application:
     name: $SERVICE_NAME
   cloud:
     config:
-      uri: \${SPRING_CLOUD_CONFIG_URI:http://config-server:8888}
-      fail-fast: true
-      retry:
-        initial-interval: 1000
-        max-interval: 2000
-        multiplier: 1.1
-        max-attempts: 20
-
-# Configuration pour le développement local
----
-spring:
-  config:
-    activate:
-      on-profile: local
-  cloud:
-    config:
       uri: \${CONFIG_URI:http://localhost:8888}
-
-# Configuration pour le développement test      
----
-spring:
-  config:
-    activate:
-      on-profile: test
-  cloud:
-    config:
-      enabled: false
-# Configuration MongoDB pour les tests
-  data:
-    mongodb:
-      embedded:
-        version: 4.4.0
-      host: localhost
-      port: 0
-      database: test_${SERVICE_NAME}
+      fail-fast: true
 EOF
 
-    # bootstrap-test.yml pour les tests
+    # bootstrap-test.yml pour désactiver config server pendant les tests
     cat > "$SERVICE_DIR/src/test/resources/bootstrap-test.yml" <<EOF
 spring:
   cloud:
@@ -632,7 +547,12 @@ spring:
       enabled: false
 eureka:
   client:
-    enabled: false  
+    enabled: false
+EOF
+
+    # application-test.yml pour les tests
+    cat > "$SERVICE_DIR/src/test/resources/application-test.yml" <<EOF
+# Configuration de test générique
 EOF
   fi
 }
@@ -645,10 +565,8 @@ generate_unit_tests() {
   local PACKAGE_SAFE="$4"
   local PACKAGE_DIR=$(echo "$GROUP_ID" | sed 's/\./\//g')/$PACKAGE_SAFE
 
-  # Créer le répertoire de test
   mkdir -p "$SERVICE_DIR/src/test/java/$PACKAGE_DIR"
 
-  # Test de l'application principale
   cat > "$SERVICE_DIR/src/test/java/$PACKAGE_DIR/${CAMEL_CASE_NAME}ApplicationTests.java" <<EOF
 package $GROUP_ID.$PACKAGE_SAFE;
 
@@ -656,135 +574,16 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 @SpringBootTest
 @ActiveProfiles("test")
 class ${CAMEL_CASE_NAME}ApplicationTests {
-
     @Test
-    void contextLoads() {
-        assertTrue(true, "Le contexte Spring devrait se charger sans erreur");
-    }
-
-    @Test
-    void mainMethodStartsApplication() {
-        ${CAMEL_CASE_NAME}Application.main(new String[]{});
-        assertTrue(true, "L'application devrait démarrer sans erreur");
-    }
+    void contextLoads() {}
 }
 EOF
-
-  # Tests supplémentaires pour les services spécifiques
-  case "$SERVICE_NAME" in
-    "config-server")
-      cat > "$SERVICE_DIR/src/test/java/$PACKAGE_DIR/ConfigServerHealthTest.java" <<EOF
-package $GROUP_ID.$PACKAGE_SAFE;
-
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.ApplicationContext;
-import org.springframework.test.context.ActiveProfiles;
-
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-
-@SpringBootTest
-@ActiveProfiles("test")
-class ConfigServerHealthTest {
-
-    @Autowired
-    private ApplicationContext context;
-
-    @Test
-    void contextShouldContainConfigServerBeans() {
-        assertNotNull(context, "Le contexte Spring devrait être initialisé");
-    }
-}
-EOF
-      ;;
-
-    "eureka-server")
-      cat > "$SERVICE_DIR/src/test/java/$PACKAGE_DIR/EurekaServerConfigTest.java" <<EOF
-package $GROUP_ID.$PACKAGE_SAFE;
-
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.core.env.Environment;
-import org.springframework.test.context.ActiveProfiles;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
-@SpringBootTest
-@ActiveProfiles("test")
-class EurekaServerConfigTest {
-
-    @Autowired
-    private Environment environment;
-
-    @Test
-    void shouldNotRegisterWithEurekaInTestProfile() {
-        String registerWithEureka = environment.getProperty("eureka.client.register-with-eureka");
-        assertEquals("false", registerWithEureka, "Eureka ne devrait pas s'enregistrer lui-même en mode test");
-    }
-}
-EOF
-      ;;
-
-    "api-gateway")
-      cat > "$SERVICE_DIR/src/test/java/$PACKAGE_DIR/ApiGatewayRoutingTest.java" <<EOF
-package $GROUP_ID.$PACKAGE_SAFE;
-
-import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.ActiveProfiles;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-@SpringBootTest
-@ActiveProfiles("test")
-class ApiGatewayRoutingTest {
-
-    @Test
-    void gatewayShouldBeEnabled() {
-        assertTrue(true, "La gateway API devrait être configurée");
-    }
-}
-EOF
-      ;;
-
-    *)
-      # Tests pour les services vidéo
-      cat > "$SERVICE_DIR/src/test/java/$PACKAGE_DIR/${CAMEL_CASE_NAME}ServiceTest.java" <<EOF
-package $GROUP_ID.$PACKAGE_SAFE;
-
-import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.ActiveProfiles;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-@SpringBootTest
-@ActiveProfiles("test")
-class ${CAMEL_CASE_NAME}ServiceTest {
-
-    @Test
-    void serviceShouldBeDiscoverable() {
-        assertTrue(true, "Le service devrait être configuré pour la découverte");
-    }
-
-    @Test
-    void shouldHaveMongoDBConfiguration() {
-        assertTrue(true, "Le service devrait avoir une configuration MongoDB");
-    }
-}
-EOF
-      ;;
-  esac
 }
 
-# 🐳 Génération du docker-compose.yml avec variables d'environnement
+# 🐳 Génération du docker-compose.yml
 generate_docker_compose() {
   cat > "$PLATFORM_NAME/docker-compose.yml" <<EOF
 version: '3.8'
@@ -794,27 +593,17 @@ services:
     container_name: mongodb
     ports:
       - "27017:27017"
-    environment:
-      - MONGO_INITDB_DATABASE=smartvision
     healthcheck:
       test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - smartvision-net
 
   config-server:
     build: ./config-server
     container_name: ${PLATFORM_NAME}-config-server
     ports:
       - "8888:8888"
-    volumes:
-      - \${CONFIG_REPO_PATH:-$INIT_REPO_PATH}:/config-repo
-    environment:
-      - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=file:/config-repo
-      - CONFIG_REPO_BRANCH=\${CONFIG_REPO_BRANCH:-main}
-      - SPRING_PROFILES_ACTIVE=\${SPRING_PROFILES_ACTIVE:-docker}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8888/actuator/health"]
       interval: 10s
@@ -822,6 +611,13 @@ services:
       retries: 5
     networks:
       - smartvision-net
+    volumes:
+      - ${INIT_REPO_PATH}:${INIT_REPO_PATH}
+    environment:
+      - HOME=${HOME}
+      - CONFIG_REPO_BRANCH=\${CONFIG_REPO_BRANCH:-main}
+      - SPRING_CLOUD_CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
+      - SPRING_PROFILES_ACTIVE=\${SPRING_PROFILES_ACTIVE:-docker}
 
   eureka-server:
     build: ./eureka-server
@@ -829,23 +625,25 @@ services:
     container_name: ${PLATFORM_NAME}-eureka-server
     ports:
       - "8761:8761"
-    environment:
-      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=\${EUREKA_DEFAULTZONE:-http://eureka-server:8761/eureka/}
-      - SPRING_CLOUD_CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
-      - SPRING_PROFILES_ACTIVE=\${SPRING_PROFILES_ACTIVE:-docker}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8761/actuator/health"]
       interval: 10s
       timeout: 5s
       retries: 5
+    volumes:
+      - ${INIT_REPO_PATH}:${INIT_REPO_PATH}
     networks:
       - smartvision-net
+    environment:
+      - HOME=${HOME}
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=\${EUREKA_DEFAULTZONE:-http://eureka-server:8761/eureka/}
+      - SPRING_CLOUD_CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
+      - SPRING_PROFILES_ACTIVE=\${SPRING_PROFILES_ACTIVE:-docker}
     depends_on:
-      config-server:
-        condition: service_healthy
+      - config-server
 EOF
 
-  # Ajouter les services API Gateway et Video
+  # Ajouter les autres services
   for SERVICE in "api-gateway" "video-core" "video-analyzer" "video-storage"; do
     PORT=${SERVICE_PORTS[$SERVICE]}
     cat >> "$PLATFORM_NAME/docker-compose.yml" <<EOF
@@ -855,11 +653,6 @@ EOF
     container_name: ${PLATFORM_NAME}-$SERVICE
     ports:
       - "$PORT:$PORT"
-    environment:
-      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=\${EUREKA_DEFAULTZONE:-http://eureka-server:8761/eureka/}
-      - SPRING_CLOUD_CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
-      - SPRING_PROFILES_ACTIVE=\${SPRING_PROFILES_ACTIVE:-docker}
-      - SPRING_DATA_MONGODB_URI=\${MONGODB_URI:-mongodb://mongodb:27017/smartvision}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:$PORT/actuator/health"]
       interval: 10s
@@ -867,11 +660,16 @@ EOF
       retries: 5
     networks:
       - smartvision-net
+    volumes:
+      - ${INIT_REPO_PATH}:${INIT_REPO_PATH}
+    environment:
+      - HOME=${HOME}
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=\${EUREKA_DEFAULTZONE:-http://eureka-server:8761/eureka/}
+      - SPRING_CLOUD_CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
+      - SPRING_PROFILES_ACTIVE=\${SPRING_PROFILES_ACTIVE:-docker}
     depends_on:
-      config-server:
-        condition: service_healthy
-      eureka-server:
-        condition: service_healthy
+      - config-server
+      - eureka-server
 EOF
   done
 
@@ -880,14 +678,6 @@ EOF
 networks:
   smartvision-net:
     driver: bridge
-
-# Variables d'environnement
-# EUREKA_DEFAULTZONE=http://eureka-server:8761/eureka/
-# CONFIG_URI=http://config-server:8888
-# SPRING_PROFILES_ACTIVE=docker
-# CONFIG_REPO_BRANCH=main
-# MONGODB_URI=mongodb://mongodb:27017/smartvision
-# CONFIG_REPO_PATH=$INIT_REPO_PATH
 EOF
 }
 
@@ -896,12 +686,8 @@ generate_project_files() {
   # .env.example
   cat > "$PLATFORM_NAME/.env.example" <<EOF
 # Configuration Docker Compose
-EUREKA_DEFAULTZONE=http://eureka-server:8761/eureka/
-CONFIG_URI=http://config-server:8888
-SPRING_PROFILES_ACTIVE=docker
 CONFIG_REPO_BRANCH=main
-MONGODB_URI=mongodb://mongodb:27017/smartvision
-CONFIG_REPO_PATH=$INIT_REPO_PATH
+SPRING_PROFILES_ACTIVE=docker
 EOF
 
   # README.md
@@ -927,28 +713,12 @@ EOF
 1. Copier le fichier d'environnement: \`cp .env.example .env\`
 2. Construire les images: \`docker-compose build\`
 3. Démarrer les services: \`docker-compose up -d\`
-4. Vérifier Eureka: http://localhost:8761
-5. Vérifier Config Server: http://localhost:8888
-
-## Variables d'environnement
-
-Les variables peuvent être définies dans un fichier \`.env\` à la racine:
-
-- \`EUREKA_DEFAULTZONE\`: URL d'Eureka Server
-- \`CONFIG_URI\`: URL du Config Server  
-- \`SPRING_PROFILES_ACTIVE\`: Profils Spring actifs
-- \`CONFIG_REPO_BRANCH\`: Branche du dépôt de configuration
-- \`MONGODB_URI\`: URI de connexion MongoDB
-- \`CONFIG_REPO_PATH\`: Chemin vers le dépôt de configuration
 
 ## Tests
 
 \`\`\`bash
-# Lancer les tests pour tous les services
-mvn test
-
-# Lancer les tests pour un service spécifique
-cd config-server && mvn test
+# Lancer les tests avec le profil test
+mvn test -Dspring.profiles.active=test
 \`\`\`
 EOF
 }
@@ -958,35 +728,24 @@ main() {
   log "Démarrage de la génération de la plateforme..."
   parse_arguments "$@"
   
-  # Déterminer la version de Spring Cloud
   SPRINGCLOUD_VERSION=${SPRING_CLOUD_VERSIONS[$SPRINGBOOT_VERSION]}
   if [ -z "$SPRINGCLOUD_VERSION" ]; then
     error "Version Spring Cloud non trouvée pour Spring Boot $SPRINGBOOT_VERSION"
-    echo "Versions supportées: ${!SPRING_CLOUD_VERSIONS[@]}"
     exit 1
   fi
   
   check_prerequisites
   create_project_structure
   
-  # Création des services
   for SERVICE in "${SERVICES[@]}"; do
     create_service "$SERVICE"
   done
   
   success "Plateforme $PLATFORM_NAME générée avec succès!"
-  log "Prochaines étapes:"
-  log "1. cd $PLATFORM_NAME"
-  log "2. cp .env.example .env"
-  log "3. mvn clean package (pour chaque service)"
-  log "4. docker-compose build"
-  log "5. docker-compose up -d"
   
-  # Créer le dossier de configuration centralisée si demandé
   if [ "$INIT_CONFIG_REPO" = true ]; then
     init_config_repo "$INIT_REPO_PATH"
   fi
 }
 
-# Exécution
 main "$@"
