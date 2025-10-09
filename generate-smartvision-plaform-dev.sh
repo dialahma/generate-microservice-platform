@@ -216,6 +216,7 @@ init_config_repo() {
   git config user.email "generator@smartvision"
   git config user.name "SmartVision Generator"
   git commit -m "Initial commit: Configuration des microservices"
+  git branch -M main
   
   success "Dépôt de configuration initialisé: $repo_path"
   cd - > /dev/null
@@ -483,7 +484,7 @@ management:
   endpoint:
     health:
       show-details: always
-	refresh:
+    refresh:
       enabled: true
     loggers:
       enabled: true
@@ -1365,7 +1366,7 @@ spring:
     config:
       server:
         git:
-          uri: file:\${INIT_REPO_PATH}
+          uri: file:$INIT_REPO_PATH
           clone-on-start: true
           force-pull: true
           default-label: \${CONFIG_REPO_BRANCH:main}
@@ -1574,7 +1575,7 @@ services:
     networks:
       - smartvision-net
     volumes:
-      - ${INIT_REPO_PATH}:${INIT_REPO_PATH}:ro
+      - ${INIT_REPO_PATH}:${INIT_REPO_PATH}
     environment:
       - HOME=${HOME}
       - CONFIG_REPO_BRANCH=\${CONFIG_REPO_BRANCH:-main}
@@ -1648,7 +1649,7 @@ EOF
 EOF
   else
     cat >> "$PLATFORM_NAME/docker-compose.yml" <<EOF
-  video_storage:
+  video-storage:
     build: ./video-storage
     container_name: ${PLATFORM_NAME}-video-storage
     ports:
