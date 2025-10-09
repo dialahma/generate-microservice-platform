@@ -404,7 +404,7 @@ spring:
     name: video-storage
   data:
     mongodb:
-      uri: mongodb://mongo:27017/smartvideo
+      uri: mongodb://mongodb:27017/smartvideo
       auto-index-creation: true
     redis:
       host: redis
@@ -886,36 +886,36 @@ NGINX
 
 haproxy_cfg(){ cat <<'HAPROXY'
 global
-    daemon
-    maxconn 256
+  daemon
+  maxconn 256
 
 defaults
-    mode http
-    timeout connect 5000ms
-    timeout client 50000ms
-    timeout server 50000ms
-    option forwardfor
-    option http-server-close
+  mode http
+  timeout connect 5000ms
+  timeout client 50000ms
+  timeout server 50000ms
+  option forwardfor
+  option http-server-close
 
 frontend http_in
-    bind *:80
-    default_backend services
+  bind *:80
+  default_backend services
 
 backend services
-    balance roundrobin
-    server api-gateway1 api-gateway:8084 check
-    server api-gateway2 api-gateway:8085 check backup
+  balance roundrobin
+  server api-gateway1 api-gateway:8084 check
+  server api-gateway2 api-gateway:8085 check backup
 
     # Health check
-    option httpchk GET /actuator/health
-    http-check expect status 200
+  option httpchk GET /actuator/health
+  http-check expect status 200
 
 frontend stats
-    bind *:1936
-    stats enable
-    stats uri /
-    stats hide-version
-    stats auth admin:admin
+  bind *:1936
+  stats enable
+  stats uri /
+  stats hide-version
+  stats auth admin:admin
 HAPROXY
 }
 
@@ -1097,13 +1097,10 @@ create_service() {
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-redis</artifactId>
     </dependency>
+    <!-- CircuitBreaker for Gateway filters -->
     <dependency>
-      <groupId>io.github.resilience4j</groupId>
-      <artifactId>resilience4j-spring-boot2</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.github.resilience4j</groupId>
-      <artifactId>resilience4j-all</artifactId>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-circuitbreaker-reactor-resilience4j</artifactId>
     </dependency>"
       IMPORTS="import org.springframework.cloud.client.discovery.EnableDiscoveryClient;"
       ANNOTATION='@EnableDiscoveryClient
@@ -1120,7 +1117,22 @@ create_service() {
    
    
    "video-storage")
+          IMPORTS="import org.springframework.cloud.client.discovery.EnableDiscoveryClient;"
+          ANNOTATION='@EnableDiscoveryClient
+@SpringBootApplication'
 	  DEPENDENCIES="<dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-config</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-bootstrap</artifactId>
+    </dependency>
+    <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-mongodb</artifactId>
     </dependency>
@@ -1140,8 +1152,23 @@ create_service() {
     </dependency>"
        ;;
    
-    "video-analyzer")   
+    "video-analyzer")
+       IMPORTS="import org.springframework.cloud.client.discovery.EnableDiscoveryClient;"
+       ANNOTATION='@EnableDiscoveryClient
+@SpringBootApplication'   
        DEPENDENCIES="<dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-config</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-bootstrap</artifactId>
+    </dependency>
+       <dependency>
        <groupId>org.springframework.boot</groupId>
        <artifactId>spring-boot-starter-data-redis</artifactId>
     </dependency>
@@ -1579,7 +1606,7 @@ services:
     environment:
       - HOME=${HOME}
       - CONFIG_REPO_BRANCH=\${CONFIG_REPO_BRANCH:-main}
-      - SPRING_CLOUD_CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
+      - CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
       - SPRING_PROFILES_ACTIVE=\${SPRING_PROFILES_ACTIVE:-docker}
 
   eureka-server:
@@ -1599,8 +1626,8 @@ services:
       - smartvision-net
     environment:
       - HOME=${HOME}
-      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=\${EUREKA_DEFAULTZONE:-http://eureka-server:8761/eureka/}
-      - SPRING_CLOUD_CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
+      - EUREKA_DEFAULTZONE=\${EUREKA_DEFAULTZONE:-http://eureka-server:8761/eureka/}
+      - CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
       - SPRING_PROFILES_ACTIVE=\${SPRING_PROFILES_ACTIVE:-docker}
       - SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI=\${ISSUER_URI:-http://keycloak:8080/realms/smartvision}
     depends_on:
@@ -1633,8 +1660,8 @@ EOF
       - ${INIT_REPO_PATH}:${INIT_REPO_PATH}
     environment:
       - HOME=${HOME}
-      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=\${EUREKA_DEFAULTZONE:-http://eureka-server:8761/eureka/}
-      - SPRING_CLOUD_CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
+      - EUREKA_DEFAULTZONE=\${EUREKA_DEFAULTZONE:-http://eureka-server:8761/eureka/}
+      - CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
       - SPRING_PROFILES_ACTIVE=\${SPRING_PROFILES_ACTIVE:-docker}
       - SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI=\${ISSUER_URI:-http://keycloak:8080/realms/smartvision}
     depends_on:
@@ -1665,8 +1692,8 @@ EOF
       - ${INIT_REPO_PATH}:${INIT_REPO_PATH}
     environment:
       - HOME=${HOME}
-      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=\${EUREKA_DEFAULTZONE:-http://eureka-server:8761/eureka/}
-      - SPRING_CLOUD_CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
+      - EUREKA_DEFAULTZONE=\${EUREKA_DEFAULTZONE:-http://eureka-server:8761/eureka/}
+      - CONFIG_URI=\${CONFIG_URI:-http://config-server:8888}
       - SPRING_PROFILES_ACTIVE=\${SPRING_PROFILES_ACTIVE:-docker}
       - SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI=\${ISSUER_URI:-http://keycloak:8080/realms/smartvision}
     depends_on:
@@ -1756,7 +1783,7 @@ EOF
 
 # Access services
 http://localhost:80          # Nginx Load Balancer
-http://localhost:8080        # Keycloak Admin Console
+http://localhost:8086        # Keycloak Admin Console
 http://localhost:3000        # Grafana Dashboards
 http://localhost:9090        # Prometheus
 http://localhost:9411        # Zipkin Tracing
