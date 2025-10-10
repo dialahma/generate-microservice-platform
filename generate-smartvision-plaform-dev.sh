@@ -268,15 +268,30 @@ spring:
         - id: video-core
           uri: lb://video-core
           predicates: [ Path=/core/** ]
-          filters: [ StripPrefix=1, RequestRateLimiter=10, 2, SECONDS ]
+          filters: 
+            - StripPrefix=1
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
         - id: video-storage
           uri: lb://video-storage
           predicates: [ Path=/storage/** ]
-          filters: [ StripPrefix=1, RequestRateLimiter=5, 1, SECONDS ]
+          filters: 
+            - StripPrefix=1
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
         - id: video-analyzer
           uri: lb://video-analyzer
           predicates: [ Path=/analyzer/** ]
-          filters: [ StripPrefix=1, RequestRateLimiter=3, 1, SECONDS ]
+          filters: 
+            - StripPrefix=1
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
       httpclient:
         connect-timeout: 1000
         response-timeout: 5s
@@ -1489,6 +1504,8 @@ services:
     ports: ["80:80"]
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - smartvision-net
     depends_on:
       - api-gateway
     healthcheck:
@@ -1503,6 +1520,8 @@ services:
     ports: ["8087:80", "1936:1936"]
     volumes:
       - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - smartvision-net
     depends_on:
       - api-gateway
 
@@ -1535,6 +1554,8 @@ services:
       KC_HOSTNAME_STRICT: "false"
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    networks:
+      - smartvision-net
     ports: ["8086:8080"]
  
   mongodb:
@@ -1546,6 +1567,8 @@ services:
       MONGO_INITDB_DATABASE: smartvideo
     volumes:
       - mongo_data:/data/db
+    networks:
+      - smartvision-net
     healthcheck:
       test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -1560,6 +1583,8 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
+    networks:
+      - smartvision-net
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -1583,6 +1608,8 @@ services:
     volumes:
       - ./grafana/datasources:/etc/grafana/provisioning/datasources
       - grafana_data:/var/lib/grafana
+    networks:
+      - smartvision-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 10s
