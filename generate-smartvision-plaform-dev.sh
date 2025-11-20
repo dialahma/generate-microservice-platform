@@ -706,6 +706,68 @@ public class HelloController {
 JAVA
 }
 
+java_security_config_gateway() {
+  local SERVICE_NAME="$1"
+  local PACKAGE_SAFE
+  PACKAGE_SAFE=$(package_format "$SERVICE_NAME")
+
+  cat <<JAVA
+package $GROUP_ID.$PACKAGE_SAFE.security;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.web.SecurityFilterChain;
+
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity(jsr250Enabled = true, securedEnabled = true)
+public class SecurityConfig {
+
+    /**
+     * Chaîne de sécurité dédiée aux endpoints Actuator.
+     * Tout ce qui est /actuator/** est ouvert (Prometheus, health, info…).
+     */
+    @Bean
+    @Order(0)
+    public SecurityFilterChain actuatorSecurityFilterChain(HttpSecurity http) throws Exception {
+        http
+            .securityMatcher("/actuator/**")
+            .authorizeHttpRequests(auth -> auth
+                .anyRequest().permitAll()
+            )
+            .csrf(AbstractHttpConfigurer::disable);
+
+        // Surtout ne pas re-configurer oauth2ResourceServer ici
+        return http.build();
+    }
+
+    /**
+     * Chaîne de sécurité pour le reste des endpoints.
+     * Protégée par Keycloak (JWT Resource Server).
+     */
+    @Bean
+    @Order(1)
+    public SecurityFilterChain apiSecurityFilterChain(HttpSecurity http) throws Exception {
+        http
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/actuator/**").permitAll()
+                .anyRequest().authenticated()
+            )
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
+            .csrf(AbstractHttpConfigurer::disable);
+
+        return http.build();
+    }
+}
+JAVA
+}
+
 java_test_smoke(){ 
   local SERVICE_NAME="$1"
   local PACKAGE_SAFE=$(package_format "$SERVICE_NAME")
@@ -1363,7 +1425,13 @@ EOF
 	  java_sample_controller "$SERVICE_NAME" > "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/api/HelloController.java"
   fi    
   
-  
+    # Génération de la configuration de sécurité pour api-gateway
+  if [[ "$SERVICE_NAME" == "api-gateway" ]]; then
+      mkdir -p "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/security"
+      java_security_config_gateway "$SERVICE_NAME" > \
+        "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/security/SecurityConfig.java"
+  fi
+
   if [[ "$SERVICE_NAME" == "video-storage" ]]; then
       mkdir -p "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/model"
 	  mkdir -p "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/repo"
