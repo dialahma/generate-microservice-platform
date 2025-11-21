@@ -1,49 +1,45 @@
 #!/usr/bin/env bash
+
 set -euo pipefail
 
 # ============================================================================
-# SmartVision Platform — KUBERNETES GENERATOR (V1)
-# Génère les manifests K8s pour :
-#  - Namespace
-#  - Config global (ConfigMap)
-#  - Microservices Spring Boot (Deployments + Services)
-#  - MongoDB, Redis
-#  - Kafka + Zookeeper
-#  - IA Python (consommateur Kafka)
-#  - Keycloak, Zipkin, Prometheus, Grafana
-#  - Ingress pour exposer API + monitoring
+# SmartVision - Génération des manifestes Kubernetes (V2)
+#   - Namespace
+#   - Kafka (Strimzi)
+#   - PostgreSQL
+#   - MongoDB
+#   - Microservices Spring Boot (video-core, video-storage, video-analyzer,
+#     config-server, eureka-server, api-gateway)
+#   - IA Python (ai-engine, consommation/production Kafka)
+#   - Ingress Nginx pour api-gateway
+#   - Observabilité : Prometheus, Grafana, Zipkin
+#   - Auth : Keycloak (mode start-dev, à durcir pour la prod réelle)
 # ============================================================================
 
-NAMESPACE="smartvision"
-OUTPUT_DIR="k8s"
-DOCKER_REGISTRY="${DOCKER_REGISTRY:-smartvision}"  # ex: myregistry.com/smartvision
-PLATFORM_NAME="smartvision-platform"
+NAMESPACE="smartvision-prod"
+BASE_DIR="k8s"
 
-# Ports des services (alignés sur ton script actuel)
-declare -A SERVICE_PORTS=(
-  ["config-server"]=8888
-  ["eureka-server"]=8761
-  ["api-gateway"]=8084
-  ["video-core"]=8085
-  ["video-analyzer"]=8082
-  ["video-storage"]=8083
-)
+# Images par défaut (à adapter avec ton registry)
+IMAGE_VIDEO_CORE="registry.local/smartvision/video-core:latest"
+IMAGE_VIDEO_STORAGE="registry.local/smartvision/video-storage:latest"
+IMAGE_VIDEO_ANALYZER="registry.local/smartvision/video-analyzer:latest"   # Spring Boot
+IMAGE_CONFIG_SERVER="registry.local/smartvision/config-server:latest"
+IMAGE_EUREKA_SERVER="registry.local/smartvision/eureka-server:latest"
+IMAGE_API_GATEWAY="registry.local/smartvision/api-gateway:latest"
 
-# Topics Kafka (IA <-> microservices)
-KAFKA_TOPIC_IN="video-events-in"
-KAFKA_TOPIC_OUT="video-events-out"
+# IA Python
+IMAGE_AI_ENGINE="registry.local/smartvision/ai-engine:latest"             # Python + OpenCV/YOLO
 
-log() { echo -e "📦 $1"; }
+# Observabilité / Auth (images publiques par défaut)
+IMAGE_PROMETHEUS="prom/prometheus:latest"
+IMAGE_GRAFANA="grafana/grafana:latest"
+IMAGE_ZIPKIN="openzipkin/zipkin:2.24"
+IMAGE_KEYCLOAK="quay.io/keycloak/keycloak:24.0.1"
 
-create_dirs() {
-  mkdir -p "${OUTPUT_DIR}"/{base,infra,monitoring,ingress}
-}
+mkdir -p "${BASE_DIR}"
 
-# ----------------------------------------------------------------------------
-# Namespace
-# ----------------------------------------------------------------------------
 create_namespace() {
-  cat > "${OUTPUT_DIR}/base/namespace.yml" <<EOF
+  cat > "${BASE_DIR}/namespace.yaml" <<EOF
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -51,428 +47,355 @@ metadata:
 EOF
 }
 
-# ----------------------------------------------------------------------------
-# ConfigMap global (valeurs utilisées par les microservices)
-# ----------------------------------------------------------------------------
-create_global_configmap() {
-  cat > "${OUTPUT_DIR}/base/config-global.yml" <<EOF
-apiVersion: v1
-kind: ConfigMap
+create_kafka_strimzi() {
+  mkdir -p "${BASE_DIR}/kafka"
+
+  cat > "${BASE_DIR}/kafka/kafka-cluster.yaml" <<EOF
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
 metadata:
-  name: smartvision-common-env
+  name: sv-kafka
   namespace: ${NAMESPACE}
-data:
-  CONFIG_URI: "http://config-server:8888"
-  EUREKA_DEFAULTZONE: "http://eureka-server:8761/eureka/"
-  ISSUER_URI: "http://keycloak:8080/realms/smartvision"
-  ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
-  SPRING_PROFILES_ACTIVE: "docker"   # tu pourras créer un profil "k8s" si besoin
+spec:
+  kafka:
+    version: 3.7.0
+    replicas: 3
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    storage:
+      type: jbod
+      volumes:
+        - id: 0
+          type: persistent-claim
+          size: 20Gi
+          class: standard
+          deleteClaim: false
+  zookeeper:
+    replicas: 3
+    storage:
+      type: persistent-claim
+      size: 10Gi
+      class: standard
+      deleteClaim: false
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
 EOF
 }
 
-# ----------------------------------------------------------------------------
-# Microservice Spring Boot : Deployment + Service
-# ----------------------------------------------------------------------------
-create_microservice() {
-  local NAME="$1"
-  local PORT="${SERVICE_PORTS[$NAME]}"
-  local IMAGE="${DOCKER_REGISTRY}/${PLATFORM_NAME}-${NAME}:latest"
+create_postgres() {
+  mkdir -p "${BASE_DIR}/postgres"
 
-  cat > "${OUTPUT_DIR}/base/${NAME}-deployment.yml" <<EOF
+  cat > "${BASE_DIR}/postgres/postgres-statefulset.yaml" <<EOF
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: ${NAMESPACE}
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "smartvision"
+            - name: POSTGRES_USER
+              value: "smartvision"
+            - name: POSTGRES_PASSWORD
+              value: "changeme-postgres"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: ${NAMESPACE}
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+EOF
+}
+
+create_mongo() {
+  mkdir -p "${BASE_DIR}/mongo"
+
+  cat > "${BASE_DIR}/mongo/mongo-statefulset.yaml" <<EOF
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  namespace: ${NAMESPACE}
+spec:
+  serviceName: mongo
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7
+          ports:
+            - containerPort: 27017
+          env:
+            - name: MONGO_INITDB_DATABASE
+              value: "smartvision"
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: ${NAMESPACE}
+spec:
+  type: ClusterIP
+  selector:
+    app: mongo
+  ports:
+    - port: 27017
+      targetPort: 27017
+EOF
+}
+
+generate_microservice() {
+  local name="$1"
+  local image="$2"
+  local port="$3"
+
+  mkdir -p "${BASE_DIR}/services"
+
+  # Deployment + Service + HPA
+  cat > "${BASE_DIR}/services/${name}.yaml" <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ${NAME}
+  name: ${name}
   namespace: ${NAMESPACE}
   labels:
-    app: ${NAME}
+    app: ${name}
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: ${NAME}
+      app: ${name}
   template:
     metadata:
       labels:
-        app: ${NAME}
+        app: ${name}
     spec:
       containers:
-        - name: ${NAME}
-          image: ${IMAGE}
+        - name: ${name}
+          image: ${image}
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: ${PORT}
-          env:
-            - name: CONFIG_URI
-              valueFrom:
-                configMapKeyRef:
-                  name: smartvision-common-env
-                  key: CONFIG_URI
-            - name: EUREKA_DEFAULTZONE
-              valueFrom:
-                configMapKeyRef:
-                  name: smartvision-common-env
-                  key: EUREKA_DEFAULTZONE
-            - name: SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI
-              valueFrom:
-                configMapKeyRef:
-                  name: smartvision-common-env
-                  key: ISSUER_URI
-            - name: SPRING_PROFILES_ACTIVE
-              valueFrom:
-                configMapKeyRef:
-                  name: smartvision-common-env
-                  key: SPRING_PROFILES_ACTIVE
-          readinessProbe:
-            httpGet:
-              path: /actuator/health
-              port: ${PORT}
-            initialDelaySeconds: 15
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /actuator/health
-              port: ${PORT}
-            initialDelaySeconds: 30
-            periodSeconds: 20
-          resources:
-            requests:
-              cpu: "200m"
-              memory: "512Mi"
-            limits:
-              cpu: "1"
-              memory: "1Gi"
-EOF
-
-  cat > "${OUTPUT_DIR}/base/${NAME}-service.yml" <<EOF
+            - containerPort: ${port}
+          envFrom:
+            - configMapRef:
+                name: ${name}-config
+            - secretRef:
+                name: ${name}-secret
+---
 apiVersion: v1
 kind: Service
 metadata:
-  name: ${NAME}
+  name: ${name}
   namespace: ${NAMESPACE}
-  labels:
-    app: ${NAME}
 spec:
   type: ClusterIP
   selector:
-    app: ${NAME}
+    app: ${name}
   ports:
-    - name: http
-      port: ${PORT}
-      targetPort: ${PORT}
+    - port: ${port}
+      targetPort: ${port}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ${name}-hpa
+  namespace: ${NAMESPACE}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ${name}
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+EOF
+
+  # ConfigMap avec mapping direct sur les propriétés Spring
+  cat > "${BASE_DIR}/services/${name}-configmap.yaml" <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${name}-config
+  namespace: ${NAMESPACE}
+data:
+  SPRING_PROFILES_ACTIVE: "prod"
+
+  # Kafka
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "sv-kafka-kafka-bootstrap:9092"
+
+  # Datasource PostgreSQL
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/smartvision"
+  SPRING_DATASOURCE_USERNAME: "smartvision"
+  SPRING_DATASOURCE_PASSWORD: "changeme-postgres"
+
+  # MongoDB
+  SPRING_DATA_MONGODB_URI: "mongodb://mongo:27017/smartvision"
+
+  # Eureka / Config / Observabilité (à adapter selon tes properties)
+  EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: "http://eureka-server:8761/eureka/"
+  SPRING_CLOUD_CONFIG_URI: "http://config-server:8888"
+
+  MANAGEMENT_ZIPKIN_TRACING_ENDPOINT: "http://zipkin:9411/api/v2/spans"
+  MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,prometheus"
+EOF
+
+  # Secret placeholder pour futurs secrets sensibles (JWT, etc.)
+  cat > "${BASE_DIR}/services/${name}-secret.yaml" <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${name}-secret
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  JWT_SECRET: "changeme-jwt-secret"
 EOF
 }
 
-# ----------------------------------------------------------------------------
-# MongoDB (pour video-storage)
-# ----------------------------------------------------------------------------
-create_mongodb() {
-  cat > "${OUTPUT_DIR}/infra/mongodb.yml" <<EOF
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: mongo-pvc
-  namespace: ${NAMESPACE}
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources:
-    requests:
-      storage: 10Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mongodb
-  namespace: ${NAMESPACE}
-spec:
-  selector:
-    app: mongodb
-  ports:
-    - port: 27017
-      targetPort: 27017
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mongodb
-  namespace: ${NAMESPACE}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mongodb
-  template:
-    metadata:
-      labels:
-        app: mongodb
-    spec:
-      containers:
-        - name: mongodb
-          image: mongo:4.4
-          ports:
-            - containerPort: 27017
-          volumeMounts:
-            - name: mongo-data
-              mountPath: /data/db
-      volumes:
-        - name: mongo-data
-          persistentVolumeClaim:
-            claimName: mongo-pvc
-EOF
-}
+generate_ai_engine() {
+  mkdir -p "${BASE_DIR}/ai-engine"
 
-# ----------------------------------------------------------------------------
-# Redis
-# ----------------------------------------------------------------------------
-create_redis() {
-  cat > "${OUTPUT_DIR}/infra/redis.yml" <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis
-  namespace: ${NAMESPACE}
-spec:
-  selector:
-    app: redis
-  ports:
-    - port: 6379
-      targetPort: 6379
----
+  cat > "${BASE_DIR}/ai-engine/ai-engine.yaml" <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: redis
+  name: ai-engine
   namespace: ${NAMESPACE}
+  labels:
+    app: ai-engine
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: redis
+      app: ai-engine
   template:
     metadata:
       labels:
-        app: redis
+        app: ai-engine
     spec:
       containers:
-        - name: redis
-          image: redis:7.2-alpine
-          args: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
-          ports:
-            - containerPort: 6379
-EOF
-}
-
-# ----------------------------------------------------------------------------
-# Kafka + Zookeeper (simple cluster pour dev / prod light)
-# ----------------------------------------------------------------------------
-create_kafka() {
-  cat > "${OUTPUT_DIR}/infra/kafka.yml" <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: zookeeper
-  namespace: ${NAMESPACE}
-spec:
-  ports:
-    - port: 2181
-      targetPort: 2181
-  selector:
-    app: zookeeper
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: zookeeper
-  namespace: ${NAMESPACE}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: zookeeper
-  template:
-    metadata:
-      labels:
-        app: zookeeper
-    spec:
-      containers:
-        - name: zookeeper
-          image: bitnami/zookeeper:3.9
-          env:
-            - name: ALLOW_ANONYMOUS_LOGIN
-              value: "yes"
-          ports:
-            - containerPort: 2181
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: kafka
-  namespace: ${NAMESPACE}
-spec:
-  ports:
-    - port: 9092
-      targetPort: 9092
-  selector:
-    app: kafka
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: kafka
-  namespace: ${NAMESPACE}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: kafka
-  template:
-    metadata:
-      labels:
-        app: kafka
-    spec:
-      containers:
-        - name: kafka
-          image: bitnami/kafka:3.7
-          env:
-            - name: KAFKA_CFG_ZOOKEEPER_CONNECT
-              value: "zookeeper:2181"
-            - name: ALLOW_PLAINTEXT_LISTENER
-              value: "yes"
-            - name: KAFKA_CFG_LISTENERS
-              value: PLAINTEXT://:9092
-            - name: KAFKA_CFG_ADVERTISED_LISTENERS
-              value: PLAINTEXT://kafka:9092
-          ports:
-            - containerPort: 9092
-EOF
-}
-
-# ----------------------------------------------------------------------------
-# IA Python (consommateur / producteur Kafka)
-# ----------------------------------------------------------------------------
-create_ia_python() {
-  cat > "${OUTPUT_DIR}/infra/ia-python.yml" <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ia-python
-  namespace: ${NAMESPACE}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ia-python
-  template:
-    metadata:
-      labels:
-        app: ia-python
-    spec:
-      containers:
-        - name: ia-python
-          image: ${DOCKER_REGISTRY}/smartvision-ia:latest
+        - name: ai-engine
+          image: ${IMAGE_AI_ENGINE}
           imagePullPolicy: IfNotPresent
           env:
             - name: KAFKA_BOOTSTRAP_SERVERS
-              value: "kafka:9092"
-            - name: KAFKA_TOPIC_IN
-              value: "${KAFKA_TOPIC_IN}"
-            - name: KAFKA_TOPIC_OUT
-              value: "${KAFKA_TOPIC_OUT}"
-          resources:
-            requests:
-              cpu: "500m"
-              memory: "1Gi"
-            limits:
-              cpu: "2"
-              memory: "4Gi"
-EOF
-}
-
-# ----------------------------------------------------------------------------
-# Keycloak, Zipkin, Prometheus, Grafana
-# ----------------------------------------------------------------------------
-create_keycloak() {
-  cat > "${OUTPUT_DIR}/infra/keycloak.yml" <<EOF
+              value: "sv-kafka-kafka-bootstrap:9092"
+            - name: INPUT_TOPIC
+              value: "video-frames"
+            - name: OUTPUT_TOPIC
+              value: "video-detections"
+            - name: MONGO_URI
+              value: "mongodb://mongo:27017/smartvision"
+---
 apiVersion: v1
 kind: Service
 metadata:
-  name: keycloak
+  name: ai-engine
   namespace: ${NAMESPACE}
 spec:
+  type: ClusterIP
+  selector:
+    app: ai-engine
   ports:
-    - port: 8080
-      targetPort: 8080
-  selector:
-    app: keycloak
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: keycloak
-  namespace: ${NAMESPACE}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: keycloak
-  template:
-    metadata:
-      labels:
-        app: keycloak
-    spec:
-      containers:
-        - name: keycloak
-          image: quay.io/keycloak/keycloak:25.0.6
-          args: ["start-dev", "--import-realm"]
-          env:
-            - name: KEYCLOAK_ADMIN
-              value: "admin"
-            - name: KEYCLOAK_ADMIN_PASSWORD
-              value: "admin123"
-          ports:
-            - containerPort: 8080
+    - port: 5000
+      targetPort: 5000
 EOF
 }
 
-create_zipkin() {
-  cat > "${OUTPUT_DIR}/infra/zipkin.yml" <<EOF
-apiVersion: v1
-kind: Service
+create_ingress_api_gateway() {
+  mkdir -p "${BASE_DIR}/ingress"
+
+  cat > "${BASE_DIR}/ingress/api-gateway-ingress.yaml" <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
 metadata:
-  name: zipkin
+  name: api-gateway-ingress
   namespace: ${NAMESPACE}
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
-  ports:
-    - port: 9411
-      targetPort: 9411
-  selector:
-    app: zipkin
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: zipkin
-  namespace: ${NAMESPACE}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: zipkin
-  template:
-    metadata:
-      labels:
-        app: zipkin
-    spec:
-      containers:
-        - name: zipkin
-          image: openzipkin/zipkin:2.26
-          ports:
-            - containerPort: 9411
+  ingressClassName: nginx
+  rules:
+    - host: smartvision.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8080
 EOF
 }
 
-create_prometheus_grafana() {
-  cat > "${OUTPUT_DIR}/monitoring/prometheus.yml" <<EOF
+create_prometheus() {
+  mkdir -p "${BASE_DIR}/observability"
+
+  cat > "${BASE_DIR}/observability/prometheus-configmap.yaml" <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -484,37 +407,24 @@ data:
       scrape_interval: 15s
 
     scrape_configs:
-      - job_name: 'spring-boot'
-        metrics_path: '/actuator/prometheus'
+      - job_name: 'smartvision-microservices'
         static_configs:
           - targets:
-              - 'api-gateway:8084'
-              - 'video-core:8085'
-              - 'video-storage:8083'
-              - 'video-analyzer:8082'
-              - 'config-server:8888'
-              - 'eureka-server:8761'
+              - 'video-core:8080'
+              - 'video-storage:8081'
+              - 'video-analyzer:8090'
+              - 'api-gateway:8080'
+        metrics_path: /actuator/prometheus
 EOF
 
-  cat >> "${OUTPUT_DIR}/monitoring/prometheus.yml" <<EOF
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: prometheus
-  namespace: ${NAMESPACE}
-spec:
-  ports:
-    - port: 9090
-      targetPort: 9090
-  selector:
-    app: prometheus
----
+  cat > "${BASE_DIR}/observability/prometheus.yaml" <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: prometheus
   namespace: ${NAMESPACE}
+  labels:
+    app: prometheus
 spec:
   replicas: 1
   selector:
@@ -527,7 +437,7 @@ spec:
     spec:
       containers:
         - name: prometheus
-          image: prom/prometheus:latest
+          image: ${IMAGE_PROMETHEUS}
           args:
             - "--config.file=/etc/prometheus/prometheus.yml"
           ports:
@@ -539,29 +449,41 @@ spec:
         - name: config
           configMap:
             name: prometheus-config
-            items:
-              - key: prometheus.yml
-                path: prometheus.yml
-EOF
-
-  cat > "${OUTPUT_DIR}/monitoring/grafana.yml" <<EOF
+---
 apiVersion: v1
 kind: Service
 metadata:
-  name: grafana
+  name: prometheus
   namespace: ${NAMESPACE}
 spec:
-  ports:
-    - port: 3000
-      targetPort: 3000
+  type: ClusterIP
   selector:
-    app: grafana
+    app: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+EOF
+}
+
+create_grafana() {
+  cat > "${BASE_DIR}/observability/grafana.yaml" <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  admin-user: "admin"
+  admin-password: "changeme-grafana"
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: grafana
   namespace: ${NAMESPACE}
+  labels:
+    app: grafana
 spec:
   replicas: 1
   selector:
@@ -574,90 +496,181 @@ spec:
     spec:
       containers:
         - name: grafana
-          image: grafana/grafana:10.2.0
+          image: ${IMAGE_GRAFANA}
           env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-user
             - name: GF_SECURITY_ADMIN_PASSWORD
-              value: "admin"
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-password
           ports:
             - containerPort: 3000
-EOF
-}
-
-# ----------------------------------------------------------------------------
-# Ingress (nécessite un Ingress Controller type nginx-ingress)
-# ----------------------------------------------------------------------------
-create_ingress() {
-  cat > "${OUTPUT_DIR}/ingress/ingress.yml" <<EOF
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+---
+apiVersion: v1
+kind: Service
 metadata:
-  name: smartvision-ingress
+  name: grafana
   namespace: ${NAMESPACE}
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /\$2
 spec:
-  ingressClassName: nginx
-  rules:
-    - host: smartvision.local
-      http:
-        paths:
-          - path: /api(/|$)(.*)
-            pathType: Prefix
-            backend:
-              service:
-                name: api-gateway
-                port:
-                  number: 8084
-          - path: /grafana(/|$)(.*)
-            pathType: Prefix
-            backend:
-              service:
-                name: grafana
-                port:
-                  number: 3000
-          - path: /prometheus(/|$)(.*)
-            pathType: Prefix
-            backend:
-              service:
-                name: prometheus
-                port:
-                  number: 9090
-          - path: /zipkin(/|$)(.*)
-            pathType: Prefix
-            backend:
-              service:
-                name: zipkin
-                port:
-                  number: 9411
+  type: ClusterIP
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
 EOF
 }
 
-# ----------------------------------------------------------------------------
-# MAIN
-# ----------------------------------------------------------------------------
+create_zipkin() {
+  cat > "${BASE_DIR}/observability/zipkin.yaml" <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zipkin
+  namespace: ${NAMESPACE}
+  labels:
+    app: zipkin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zipkin
+  template:
+    metadata:
+      labels:
+        app: zipkin
+    spec:
+      containers:
+        - name: zipkin
+          image: ${IMAGE_ZIPKIN}
+          ports:
+            - containerPort: 9411
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zipkin
+  namespace: ${NAMESPACE}
+spec:
+  type: ClusterIP
+  selector:
+    app: zipkin
+  ports:
+    - port: 9411
+      targetPort: 9411
+EOF
+}
+
+create_keycloak() {
+  mkdir -p "${BASE_DIR}/keycloak"
+
+  cat > "${BASE_DIR}/keycloak/keycloak-secret.yaml" <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keycloak-admin-cred
+  namespace: ${NAMESPACE}
+type: Opaque
+stringData:
+  KEYCLOAK_ADMIN: "admin"
+  KEYCLOAK_ADMIN_PASSWORD: "changeme-keycloak"
+EOF
+
+  cat > "${BASE_DIR}/keycloak/keycloak.yaml" <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: ${NAMESPACE}
+  labels:
+    app: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+        - name: keycloak
+          image: ${IMAGE_KEYCLOAK}
+          args: ["start-dev"]
+          env:
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-cred
+                  key: KEYCLOAK_ADMIN
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-cred
+                  key: KEYCLOAK_ADMIN_PASSWORD
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: ${NAMESPACE}
+spec:
+  type: ClusterIP
+  selector:
+    app: keycloak
+  ports:
+    - port: 8080
+      targetPort: 8080
+EOF
+}
+
 main() {
-  log "Génération des manifests Kubernetes dans ${OUTPUT_DIR}/ ..."
-  create_dirs
+  echo ">> Génération des manifestes Kubernetes dans ${BASE_DIR}/ pour le namespace ${NAMESPACE}"
+
   create_namespace
-  create_global_configmap
+  create_kafka_strimzi
+  create_postgres
+  create_mongo
 
-  # Microservices Spring
-  for svc in config-server eureka-server api-gateway video-core video-analyzer video-storage; do
-    create_microservice "$svc"
-  done
+  # Microservices Spring Boot
+  generate_microservice "video-core"      "${IMAGE_VIDEO_CORE}"      8080
+  generate_microservice "video-storage"   "${IMAGE_VIDEO_STORAGE}"   8081
+  generate_microservice "video-analyzer"  "${IMAGE_VIDEO_ANALYZER}"  8090
+  generate_microservice "config-server"   "${IMAGE_CONFIG_SERVER}"   8888
+  generate_microservice "eureka-server"   "${IMAGE_EUREKA_SERVER}"   8761
+  generate_microservice "api-gateway"     "${IMAGE_API_GATEWAY}"     8080
 
-  # Infra + IA
-  create_mongodb
-  create_redis
-  create_kafka
-  create_ia_python
-  create_keycloak
+  # IA Python
+  generate_ai_engine
+
+  # Ingress
+  create_ingress_api_gateway
+
+  # Observabilité + Auth
+  create_prometheus
+  create_grafana
   create_zipkin
-  create_prometheus_grafana
-  create_ingress
+  create_keycloak
 
-  log "✅ Manifests générés. Déploiement possible avec :"
-  echo "   kubectl apply -f ${OUTPUT_DIR}/base -f ${OUTPUT_DIR}/infra -f ${OUTPUT_DIR}/monitoring -f ${OUTPUT_DIR}/ingress"
+  echo ">> Terminé."
+  echo "   Appliquer les manifestes avec :"
+  echo "   kubectl apply -f ${BASE_DIR}/namespace.yaml"
+  echo "   kubectl apply -f ${BASE_DIR}/kafka/ -n ${NAMESPACE}"
+  echo "   kubectl apply -f ${BASE_DIR}/postgres/ -n ${NAMESPACE}"
+  echo "   kubectl apply -f ${BASE_DIR}/mongo/ -n ${NAMESPACE}"
+  echo "   kubectl apply -f ${BASE_DIR}/services/ -n ${NAMESPACE}"
+  echo "   kubectl apply -f ${BASE_DIR}/ai-engine/ -n ${NAMESPACE}"
+  echo "   kubectl apply -f ${BASE_DIR}/observability/ -n ${NAMESPACE}"
+  echo "   kubectl apply -f ${BASE_DIR}/keycloak/ -n ${NAMESPACE}"
+  echo "   kubectl apply -f ${BASE_DIR}/ingress/ -n ${NAMESPACE}"
 }
 
 main "$@"
