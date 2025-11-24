@@ -706,6 +706,33 @@ public class HelloController {
 JAVA
 }
 
+java_gateway_controller() {
+  local SERVICE_NAME="$1"
+  local PACKAGE_SAFE
+  PACKAGE_SAFE=$(package_format "$SERVICE_NAME")
+
+  cat <<JAVA
+package $GROUP_ID.$PACKAGE_SAFE.api;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+/**
+ * Contrôleur réel du Gateway pour tester la sécurité.
+ */
+@RestController
+@RequestMapping("/api/gateway")
+public class GatewayInfoController {
+
+    @GetMapping("/info")
+    public String info() {
+        return "gateway-info";
+    }
+}
+JAVA
+}
+
 java_security_config_gateway() {
   local SERVICE_NAME="$1"
   local PACKAGE_SAFE
@@ -776,6 +803,7 @@ java_security_config_gateway_test() {
   cat <<JAVA
 package $GROUP_ID.$PACKAGE_SAFE.security;
 
+import $GROUP_ID.$PACKAGE_SAFE.api.GatewayInfoController;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -783,17 +811,15 @@ import org.springframework.context.annotation.Import;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RestController;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Version lightweight des tests de SecurityConfig, basée sur @WebMvcTest.
+ * Test lightweight de la sécurité du gateway, basé sur un vrai contrôleur.
  */
-@WebMvcTest(controllers = SecurityConfigWebMvcTest.DummyController.class)
+@WebMvcTest(controllers = GatewayInfoController.class)
 @Import(SecurityConfig.class)  // On importe explicitement la config de sécurité générée
 class SecurityConfigWebMvcTest {
 
@@ -807,25 +833,6 @@ class SecurityConfigWebMvcTest {
     private JwtDecoder jwtDecoder;
 
     /**
-     * Contrôleur minimal pour simuler :
-     * - /actuator/health : endpoint technique public
-     * - /api/secured : endpoint métier protégé
-     */
-    @RestController
-    static class DummyController {
-
-        @GetMapping("/actuator/health")
-        public String health() {
-            return "OK";
-        }
-
-        @GetMapping("/api/secured")
-        public String secured() {
-            return "secured";
-        }
-    }
-
-    /**
      * /actuator/** doit être accessible sans authentification.
      */
     @Test
@@ -835,20 +842,20 @@ class SecurityConfigWebMvcTest {
     }
 
     /**
-     * Les autres endpoints doivent être protégés : sans token -> 401.
+     * /api/gateway/info doit être protégé : sans token -> 401.
      */
     @Test
-    void otherEndpointsShouldBeProtectedWhenNoToken() throws Exception {
-        mockMvc.perform(get("/api/secured"))
+    void gatewayInfoShouldBeProtectedWhenNoToken() throws Exception {
+        mockMvc.perform(get("/api/gateway/info"))
                .andExpect(status().isUnauthorized());
     }
 
     /**
-     * Avec un JWT (mocké), on doit pouvoir accéder aux endpoints protégés.
+     * Avec un JWT (mocké), on doit pouvoir accéder à /api/gateway/info.
      */
     @Test
-    void otherEndpointsShouldBeAccessibleWithJwt() throws Exception {
-        mockMvc.perform(get("/api/secured").with(jwt()))
+    void gatewayInfoShouldBeAccessibleWithJwt() throws Exception {
+        mockMvc.perform(get("/api/gateway/info").with(jwt()))
                .andExpect(status().isOk());
     }
 }
@@ -1521,8 +1528,14 @@ EOF
   if [[ "$SERVICE_NAME" == "api-gateway" ]]; then
       mkdir -p "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/security"
       mkdir -p "$SERVICE_DIR/src/test/java/$PACKAGE_DIR/security"
+      mkdir -p "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/api"
+      
       java_security_config_gateway "$SERVICE_NAME" > \
         "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/security/SecurityConfig.java"
+      
+      java_gateway_controller "$SERVICE_NAME" > \
+        "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/api/GatewayInfoController.java"
+        
       java_security_config_gateway_test "$SERVICE_NAME" > \
         "$SERVICE_DIR/src/test/java/$PACKAGE_DIR/security/SecurityConfigWebMvcTest.java"
   fi
