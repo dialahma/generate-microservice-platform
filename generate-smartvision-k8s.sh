@@ -345,10 +345,32 @@ spec:
               value: "sv-kafka-kafka-bootstrap:9092"
             - name: INPUT_TOPIC
               value: "video-frames"
-            - name: OUTPUT_TOPIC
+            - name: KAFKA_TOPIC_DETECTIONS
               value: "video-detections"
+            - name: RTSP_CAM1
+              value: "rtsp://admin:password@192.168.1.100:554/stream1"
+            - name: RTSP_CAM2
+              value: "rtsp://admin:password@192.168.1.101:554/stream1"
+            - name: WEBSOCKET_PORT
+              value: "8765"
+            - name: PLATE_MODEL_PATH
+              value: "/app/models/license_plate.pt"
+            - name: FACE_MODEL_PATH
+              value: "/app/models/yolov8n-face.pt"
+            - name: LOG_LEVEL
+              value: "INFO"
             - name: MONGO_URI
               value: "mongodb://mongo:27017/smartvision"
+          ports:
+            - containerPort: 8765
+              name: ws
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ai-engine-models-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -360,8 +382,9 @@ spec:
   selector:
     app: ai-engine
   ports:
-    - port: 5000
-      targetPort: 5000
+    - port: 8765
+      targetPort: 8765
+      name: ws
 EOF
 }
 
