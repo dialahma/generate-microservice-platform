@@ -768,6 +768,93 @@ public class SecurityConfig {
 JAVA
 }
 
+java_security_config_gateway_test() {
+  local SERVICE_NAME="$1"
+  local PACKAGE_SAFE
+  PACKAGE_SAFE=$(package_format "$SERVICE_NAME")
+
+  cat <<JAVA
+package $GROUP_ID.$PACKAGE_SAFE.security;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * Version lightweight des tests de SecurityConfig, basée sur @WebMvcTest.
+ */
+@WebMvcTest(controllers = SecurityConfigWebMvcTest.DummyController.class)
+@Import(SecurityConfig.class)  // On importe explicitement la config de sécurité générée
+class SecurityConfigWebMvcTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    /**
+     * Mock du JwtDecoder requis par oauth2ResourceServer().jwt()
+     */
+    @MockBean
+    private JwtDecoder jwtDecoder;
+
+    /**
+     * Contrôleur minimal pour simuler :
+     * - /actuator/health : endpoint technique public
+     * - /api/secured : endpoint métier protégé
+     */
+    @RestController
+    static class DummyController {
+
+        @GetMapping("/actuator/health")
+        public String health() {
+            return "OK";
+        }
+
+        @GetMapping("/api/secured")
+        public String secured() {
+            return "secured";
+        }
+    }
+
+    /**
+     * /actuator/** doit être accessible sans authentification.
+     */
+    @Test
+    void actuatorEndpointsShouldBePublic() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+               .andExpect(status().isOk());
+    }
+
+    /**
+     * Les autres endpoints doivent être protégés : sans token -> 401.
+     */
+    @Test
+    void otherEndpointsShouldBeProtectedWhenNoToken() throws Exception {
+        mockMvc.perform(get("/api/secured"))
+               .andExpect(status().isUnauthorized());
+    }
+
+    /**
+     * Avec un JWT (mocké), on doit pouvoir accéder aux endpoints protégés.
+     */
+    @Test
+    void otherEndpointsShouldBeAccessibleWithJwt() throws Exception {
+        mockMvc.perform(get("/api/secured").with(jwt()))
+               .andExpect(status().isOk());
+    }
+}
+JAVA
+}
+
 java_test_smoke(){ 
   local SERVICE_NAME="$1"
   local PACKAGE_SAFE=$(package_format "$SERVICE_NAME")
@@ -1336,6 +1423,11 @@ create_service() {
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <dependencyManagement>
     <dependencies>
@@ -1428,8 +1520,11 @@ EOF
     # Génération de la configuration de sécurité pour api-gateway
   if [[ "$SERVICE_NAME" == "api-gateway" ]]; then
       mkdir -p "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/security"
+      mkdir -p "$SERVICE_DIR/src/test/java/$PACKAGE_DIR/security"
       java_security_config_gateway "$SERVICE_NAME" > \
         "$SERVICE_DIR/src/main/java/$PACKAGE_DIR/security/SecurityConfig.java"
+      java_security_config_gateway_test "$SERVICE_NAME" > \
+        "$SERVICE_DIR/src/test/java/$PACKAGE_DIR/security/SecurityConfigWebMvcTest.java"
   fi
 
   if [[ "$SERVICE_NAME" == "video-storage" ]]; then
