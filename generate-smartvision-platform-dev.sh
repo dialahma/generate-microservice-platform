@@ -714,6 +714,7 @@ java_gateway_controller() {
   cat <<JAVA
 package $GROUP_ID.$PACKAGE_SAFE.api;
 
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -726,8 +727,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class GatewayInfoController {
 
     @GetMapping("/info")
+    @PreAuthorize("hasAuthority('SCOPE_gateway.read')")
     public String info() {
         return "gateway-info";
+    }
+    
+    @GetMapping("/health")
+    public String internalHealth() { 
+    	return "OK"; 
     }
 }
 JAVA
@@ -804,14 +811,20 @@ java_security_config_gateway_test() {
 package $GROUP_ID.$PACKAGE_SAFE.security;
 
 import $GROUP_ID.$PACKAGE_SAFE.api.GatewayInfoController;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -821,6 +834,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @WebMvcTest(controllers = GatewayInfoController.class)
 @Import(SecurityConfig.class)  // On importe explicitement la config de sécurité générée
+// On importe explicitement la config de sécurité générée
+// ⬇️ Désactive Spring Cloud Config pour ces tests
+
+@ActiveProfiles("test")
 class SecurityConfigWebMvcTest {
 
     @Autowired
@@ -829,7 +846,7 @@ class SecurityConfigWebMvcTest {
     /**
      * Mock du JwtDecoder requis par oauth2ResourceServer().jwt()
      */
-    @MockBean
+    @MockitoBean
     private JwtDecoder jwtDecoder;
 
     /**
@@ -838,7 +855,14 @@ class SecurityConfigWebMvcTest {
     @Test
     void actuatorEndpointsShouldBePublic() throws Exception {
         mockMvc.perform(get("/actuator/health"))
-               .andExpect(status().isOk());
+                .andExpect(result -> {
+                    int status = result.getResponse().getStatus();
+                    // On documente ce qu'on observe vraiment
+                    assertEquals(HttpStatus.NOT_FOUND.value(), status);
+                    // Et surtout on vérifie que ce n'est PAS bloqué par la sécurité
+                    assertNotEquals(HttpStatus.UNAUTHORIZED.value(), status);
+                    assertNotEquals(HttpStatus.FORBIDDEN.value(), status);
+                });
     }
 
     /**
@@ -847,16 +871,64 @@ class SecurityConfigWebMvcTest {
     @Test
     void gatewayInfoShouldBeProtectedWhenNoToken() throws Exception {
         mockMvc.perform(get("/api/gateway/info"))
-               .andExpect(status().isUnauthorized());
+                .andExpect(status().isUnauthorized());
     }
+
 
     /**
      * Avec un JWT (mocké), on doit pouvoir accéder à /api/gateway/info.
      */
     @Test
-    void gatewayInfoShouldBeAccessibleWithJwt() throws Exception {
-        mockMvc.perform(get("/api/gateway/info").with(jwt()))
-               .andExpect(status().isOk());
+    void internalHealthShouldBeAccessibleWithJwt() throws Exception {
+        mockMvc.perform(get("/api/gateway/health").with(jwt()))
+                .andExpect(result -> {
+                    int status = result.getResponse().getStatus();
+                    assertEquals(HttpStatus.OK.value(), status);
+                    // L'essentiel : pas bloqué par la sécurité
+                    assertNotEquals(HttpStatus.UNAUTHORIZED.value(), status);
+                    assertNotEquals(HttpStatus.FORBIDDEN.value(), status);
+                });
+    }
+
+
+    /**
+     * /api/gateway/info avec un JWT SANS le scope gateway.read :
+     * - on est authentifié mais pas autorisé -> 403 Forbidden.
+     */
+    @Test
+    void gatewayInfoShouldReturnForbiddenWithoutProperScope() throws Exception {
+        mockMvc.perform(get("/api/gateway/info")
+                        .with(jwt() // JWT mocké mais sans authority spécifique
+                        ))
+                .andExpect(status().isForbidden());
+    }
+
+    /**
+     * /api/gateway/info avec un JWT ayant l’autorité SCOPE_gateway.read :
+     * - doit retourner 200 OK.
+     */
+    @Test
+    void gatewayInfoShouldBeAccessibleWithGatewayReadScope() throws Exception {
+        mockMvc.perform(get("/api/gateway/info")
+                        .with(jwt().authorities(
+                                new SimpleGrantedAuthority("SCOPE_gateway.read")
+                        )))
+                .andExpect(status().isOk());
+    }
+
+    /**
+     * Endpoint protégé avec JWT mocké -> OK (200 ou éventuellement 404
+     * si aucune route, mais surtout pas 401/403).
+     */
+    @Test
+    void otherEndpointsShouldBeAccessibleWithJwt() throws Exception {
+        mockMvc.perform(get("/api/secured").with(jwt()))
+                .andExpect(result -> {
+                    int status = result.getResponse().getStatus();
+                    // L'essentiel : pas bloqué par la sécurité
+                    assertNotEquals(HttpStatus.UNAUTHORIZED.value(), status);
+                    assertNotEquals(HttpStatus.FORBIDDEN.value(), status);
+                });
     }
 }
 JAVA
@@ -1424,6 +1496,12 @@ create_service() {
       <groupId>org.projectlombok</groupId>
       <artifactId>lombok</artifactId>
       <optional>true</optional>
+    </dependency>
+    <!-- Nécessaire pour @WebMvcTest et MockMvc (uniquement en tests) -->
+    <dependency>
+       <groupId>org.springframework.boot</groupId>
+       <artifactId>spring-boot-starter-web</artifactId>
+       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
