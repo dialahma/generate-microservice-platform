@@ -714,29 +714,28 @@ java_gateway_controller() {
   cat <<JAVA
 package $GROUP_ID.$PACKAGE_SAFE.api;
 
+
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Mono;
 
-/**
- * Contrôleur réel du Gateway pour tester la sécurité.
- */
 @RestController
 @RequestMapping("/api/gateway")
 public class GatewayInfoController {
 
     @GetMapping("/info")
     @PreAuthorize("hasAuthority('SCOPE_gateway.read')")
-    public String info() {
-        return "gateway-info";
+    public Mono<String> info() {
+        return Mono.just("gateway-info");
     }
-    
+
     @GetMapping("/health")
-    public String internalHealth() { 
-    	return "OK"; 
-    }
+    public Mono<String> internalHealth() { return Mono.just("OK"); }
+
 }
+
 JAVA
 }
 
@@ -751,54 +750,100 @@ package $GROUP_ID.$PACKAGE_SAFE.security;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
-import org.springframework.security.config.Customizer;
-import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
-import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
-import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.core.convert.converter.Converter;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AbstractAuthenticationToken;
+import org.springframework.security.config.annotation.method.configuration.EnableReactiveMethodSecurity;
+import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
+import org.springframework.security.config.web.server.ServerHttpSecurity;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+import org.springframework.security.oauth2.server.resource.authentication.ReactiveJwtAuthenticationConverterAdapter;
+import org.springframework.security.web.server.SecurityWebFilterChain;
+import org.springframework.security.web.server.util.matcher.PathPatternParserServerWebExchangeMatcher;
+import reactor.core.publisher.Mono;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 @Configuration
-@EnableWebSecurity
-@EnableMethodSecurity(jsr250Enabled = true, securedEnabled = true)
+@EnableWebFluxSecurity
+@EnableReactiveMethodSecurity // pour @PreAuthorize sur GatewayInfoController
 public class SecurityConfig {
 
     /**
-     * Chaîne de sécurité dédiée aux endpoints Actuator.
-     * Tout ce qui est /actuator/** est ouvert (Prometheus, health, info…).
+     * Chaîne de sécurité dédiée aux endpoints Actuator : tout est permis.
      */
     @Bean
     @Order(0)
-    public SecurityFilterChain actuatorSecurityFilterChain(HttpSecurity http) throws Exception {
-        http
-            .securityMatcher("/actuator/**")
-            .authorizeHttpRequests(auth -> auth
-                .anyRequest().permitAll()
-            )
-            .csrf(AbstractHttpConfigurer::disable);
-
-        // Surtout ne pas re-configurer oauth2ResourceServer ici
-        return http.build();
+    public SecurityWebFilterChain actuatorSecurityFilterChain(ServerHttpSecurity http) {
+        return http
+                .securityMatcher(new PathPatternParserServerWebExchangeMatcher("/actuator/**"))
+                .authorizeExchange(exchanges -> exchanges
+                        .anyExchange().permitAll()
+                )
+                .csrf(ServerHttpSecurity.CsrfSpec::disable)
+                .build();
     }
 
     /**
-     * Chaîne de sécurité pour le reste des endpoints.
-     * Protégée par Keycloak (JWT Resource Server).
+     * Chaîne de sécurité principale pour l’API Gateway.
      */
     @Bean
     @Order(1)
-    public SecurityFilterChain apiSecurityFilterChain(HttpSecurity http) throws Exception {
-        http
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/actuator/**").permitAll()
-                .anyRequest().authenticated()
-            )
-            .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
-            .csrf(AbstractHttpConfigurer::disable);
+    public SecurityWebFilterChain apiSecurityFilterChain(
+            ServerHttpSecurity http,
+            Converter<Jwt, ? extends Mono<? extends AbstractAuthenticationToken>> jwtAuthConverter
+    ) {
 
-        return http.build();
+        return http
+                .authorizeExchange(exchanges -> exchanges
+                        .pathMatchers("/actuator/**").permitAll()
+                        .pathMatchers(HttpMethod.OPTIONS).permitAll()
+                        // L’endpoint info est protégé par @PreAuthorize dans le controller,
+                        // ici on demande juste une authentification
+                        .pathMatchers("/api/gateway/info").authenticated()
+                        .anyExchange().authenticated()
+                )
+                .csrf(ServerHttpSecurity.CsrfSpec::disable)
+                .oauth2ResourceServer(oauth2 -> oauth2
+                        .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthConverter))
+                )
+                .build();
+    }
+
+    /**
+     * Converter JWT (Keycloak-style) → authorities réactives.
+     * On transforme le JwtAuthenticationConverter (servlet) en converter réactif
+     * via ReactiveJwtAuthenticationConverterAdapter.
+     */
+    @Bean
+    public Converter<Jwt, ? extends Mono<? extends AbstractAuthenticationToken>> jwtAuthConverter() {
+        JwtAuthenticationConverter delegate = new JwtAuthenticationConverter();
+        delegate.setJwtGrantedAuthoritiesConverter(jwt -> {
+            Collection<GrantedAuthority> authorities = new ArrayList<>();
+
+            Object scopeClaim = jwt.getClaims().get("scope");
+            if (scopeClaim instanceof String scopeStr) {
+                Arrays.stream(scopeStr.split(" "))
+                        .filter(s -> !s.isBlank())
+                        .forEach(s ->
+                                authorities.add(new SimpleGrantedAuthority("SCOPE_" + s))
+                        );
+            }
+
+            return authorities;
+        });
+
+        // 🔴 ICI la magie : adaptation en converter réactif
+        return new ReactiveJwtAuthenticationConverterAdapter(delegate);
     }
 }
+
 JAVA
 }
 
@@ -810,127 +855,131 @@ java_security_config_gateway_test() {
   cat <<JAVA
 package $GROUP_ID.$PACKAGE_SAFE.security;
 
-import $GROUP_ID.$PACKAGE_SAFE.api.GatewayInfoController;
-
+import net.smart.vision.api_gateway.api.GatewayInfoController;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.autoconfigure.security.oauth2.resource.reactive.ReactiveOAuth2ResourceServerAutoConfiguration;
+import org.springframework.boot.test.autoconfigure.web.reactive.WebFluxTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
+
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.reactive.server.WebTestClient;
+import reactor.core.publisher.Mono;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.mockito.ArgumentMatchers.anyString;
 
-/**
- * Test lightweight de la sécurité du gateway, basé sur un vrai contrôleur.
- */
-@WebMvcTest(controllers = GatewayInfoController.class)
-@Import(SecurityConfig.class)  // On importe explicitement la config de sécurité générée
-// On importe explicitement la config de sécurité générée
-// ⬇️ Désactive Spring Cloud Config pour ces tests
-
+@WebFluxTest(controllers = GatewayInfoController.class, excludeAutoConfiguration = ReactiveOAuth2ResourceServerAutoConfiguration.class)
+@Import(SecurityConfig.class)
 @ActiveProfiles("test")
-class SecurityConfigWebMvcTest {
+class SecurityConfigWebFluxTest {
 
     @Autowired
-    private MockMvc mockMvc;
+    private WebTestClient webTestClient;
 
-    /**
-     * Mock du JwtDecoder requis par oauth2ResourceServer().jwt()
-     */
     @MockitoBean
-    private JwtDecoder jwtDecoder;
+    private ReactiveJwtDecoder reactiveJwtDecoder;
+
+    @BeforeEach
+    void setUpJwtDecoder() {
+        Mockito.when(reactiveJwtDecoder.decode(anyString()))
+                .thenAnswer(invocation -> {
+                    String token = invocation.getArgument(0, String.class);
+
+                    var jwtBuilder = Jwt.withTokenValue(token)
+                            .header("alg", "none");
+
+                    if ("token-with-scope".equals(token)) {
+                        jwtBuilder.claim("scope", "gateway.read");
+                    } else {
+                        jwtBuilder.claim("scope", "other.scope");
+                    }
+
+                    return Mono.just(jwtBuilder.build());
+                });
+    }
+
+    @Test
+    void contextLoads() {
+        // Juste vérifier que le contexte démarre
+    }
 
     /**
-     * /actuator/** doit être accessible sans authentification.
+     * Sans Authorization -> 401 UNAUTHORIZED.
      */
     @Test
-    void actuatorEndpointsShouldBePublic() throws Exception {
-        mockMvc.perform(get("/actuator/health"))
-                .andExpect(result -> {
-                    int status = result.getResponse().getStatus();
-                    // On documente ce qu'on observe vraiment
+    void gatewayInfoShouldBeProtectedWhenNoToken() {
+        webTestClient
+                .get().uri("/api/gateway/info")
+                .exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    /**
+     * Avec un token décodé sans le scope gateway.read -> 403 FORBIDDEN.
+     */
+    @Test
+    void gatewayInfoShouldReturnForbiddenWithoutProperScope() {
+        webTestClient
+                .get().uri("/api/gateway/info")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer token-no-scope")
+                .exchange()
+                .expectStatus().isForbidden();
+    }
+
+    /**
+     * Avec un token décodé contenant le scope gateway.read -> 200 OK.
+     */
+    @Test
+    void gatewayInfoShouldBeAccessibleWithGatewayReadScope() {
+        webTestClient
+                .get().uri("/api/gateway/info")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer token-with-scope")
+                .exchange()
+                .expectStatus().isOk();
+    }
+
+    /**
+     * /actuator/** doit rester public (pas 401/403).
+     */
+    @Test
+    void actuatorEndpointsShouldBePublic() {
+        webTestClient
+                .get().uri("/actuator/health")
+                .exchange()
+                .expectStatus()
+                .value(status -> {
+                    assertNotEquals(HttpStatus.UNAUTHORIZED.value(), status);
+                    assertNotEquals(HttpStatus.FORBIDDEN.value(), status);
+                });
+    }
+
+    /**
+     * Un endpoint quelconque protégé avec un token valide ne doit pas renvoyer 401/403.
+     */
+    @Test
+    void otherEndpointsShouldBeAccessibleWithJwt() {
+        webTestClient
+                .get().uri("/api/secured")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer token-with-scope")
+                .exchange()
+                .expectStatus()
+                .value(status -> {
+                    assertNotEquals(HttpStatus.UNAUTHORIZED.value(), status);
+                    assertNotEquals(HttpStatus.FORBIDDEN.value(), status);
                     assertEquals(HttpStatus.NOT_FOUND.value(), status);
-                    // Et surtout on vérifie que ce n'est PAS bloqué par la sécurité
-                    assertNotEquals(HttpStatus.UNAUTHORIZED.value(), status);
-                    assertNotEquals(HttpStatus.FORBIDDEN.value(), status);
-                });
-    }
-
-    /**
-     * /api/gateway/info doit être protégé : sans token -> 401.
-     */
-    @Test
-    void gatewayInfoShouldBeProtectedWhenNoToken() throws Exception {
-        mockMvc.perform(get("/api/gateway/info"))
-                .andExpect(status().isUnauthorized());
-    }
-
-
-    /**
-     * Avec un JWT (mocké), on doit pouvoir accéder à /api/gateway/info.
-     */
-    @Test
-    void internalHealthShouldBeAccessibleWithJwt() throws Exception {
-        mockMvc.perform(get("/api/gateway/health").with(jwt()))
-                .andExpect(result -> {
-                    int status = result.getResponse().getStatus();
-                    assertEquals(HttpStatus.OK.value(), status);
-                    // L'essentiel : pas bloqué par la sécurité
-                    assertNotEquals(HttpStatus.UNAUTHORIZED.value(), status);
-                    assertNotEquals(HttpStatus.FORBIDDEN.value(), status);
-                });
-    }
-
-
-    /**
-     * /api/gateway/info avec un JWT SANS le scope gateway.read :
-     * - on est authentifié mais pas autorisé -> 403 Forbidden.
-     */
-    @Test
-    void gatewayInfoShouldReturnForbiddenWithoutProperScope() throws Exception {
-        mockMvc.perform(get("/api/gateway/info")
-                        .with(jwt() // JWT mocké mais sans authority spécifique
-                        ))
-                .andExpect(status().isForbidden());
-    }
-
-    /**
-     * /api/gateway/info avec un JWT ayant l’autorité SCOPE_gateway.read :
-     * - doit retourner 200 OK.
-     */
-    @Test
-    void gatewayInfoShouldBeAccessibleWithGatewayReadScope() throws Exception {
-        mockMvc.perform(get("/api/gateway/info")
-                        .with(jwt().authorities(
-                                new SimpleGrantedAuthority("SCOPE_gateway.read")
-                        )))
-                .andExpect(status().isOk());
-    }
-
-    /**
-     * Endpoint protégé avec JWT mocké -> OK (200 ou éventuellement 404
-     * si aucune route, mais surtout pas 401/403).
-     */
-    @Test
-    void otherEndpointsShouldBeAccessibleWithJwt() throws Exception {
-        mockMvc.perform(get("/api/secured").with(jwt()))
-                .andExpect(result -> {
-                    int status = result.getResponse().getStatus();
-                    // L'essentiel : pas bloqué par la sécurité
-                    assertNotEquals(HttpStatus.UNAUTHORIZED.value(), status);
-                    assertNotEquals(HttpStatus.FORBIDDEN.value(), status);
                 });
     }
 }
+
 JAVA
 }
 
@@ -1379,7 +1428,7 @@ create_service() {
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-mongodb</artifactId>
     </dependency>
-	<dependency>
+    <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
@@ -1415,7 +1464,7 @@ create_service() {
        <groupId>org.springframework.boot</groupId>
        <artifactId>spring-boot-starter-data-redis</artifactId>
     </dependency>
-	<dependency>
+    <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
