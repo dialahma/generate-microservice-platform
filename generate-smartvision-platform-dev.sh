@@ -855,7 +855,7 @@ java_security_config_gateway_test() {
   cat <<JAVA
 package $GROUP_ID.$PACKAGE_SAFE.security;
 
-import net.smart.vision.api_gateway.api.GatewayInfoController;
+import $GROUP_ID.$PACKAGE_SAFE.api.GatewayInfoController;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -1122,7 +1122,7 @@ events {
 http {
     upstream api_gateway {
         server api-gateway:8084;
-        server api-gateway:8085 backup;
+        # server api-gateway:8085 backup;
     }
 
     upstream monitoring {
